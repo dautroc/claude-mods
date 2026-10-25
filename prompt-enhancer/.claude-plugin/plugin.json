@@ -1,0 +1,6 @@
+{
+  "name": "prompt-enhancer",
+  "version": "0.1.0",
+  "description": "Rewrites a vague prompt in the box into a specific one, using the project's instructions, skills and the chat so far, then sends it on Send",
+  "types": "./types/index.d.ts"
+}

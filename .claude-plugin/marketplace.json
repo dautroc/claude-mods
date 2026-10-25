@@ -1,0 +1,11 @@
+{
+  "name": "claude-mods",
+  "owner": { "name": "dautroc" },
+  "plugins": [
+    {
+      "name": "prompt-enhancer",
+      "source": "./prompt-enhancer",
+      "description": "Rewrites a vague prompt in the box into a specific one, using the project's instructions, skills and the chat so far, then sends it on Send"
+    }
+  ]
+}
