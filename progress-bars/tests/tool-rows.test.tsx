@@ -1,5 +1,10 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type { On, StateWrite } from 'claude-code'
+
+import { barCells } from '../hooks/scale'
+import { KEEP_TOOLS, REFUSED_PREFIX } from '../hooks/register'
+import { engine, readBar } from './helpers'
 
 const T0 = 1_800_000_000_000
 
@@ -14,13 +19,13 @@ function bash(on: On, clock: { sleep: (ms: number) => Promise<void> }, seen: { i
   })
 }
 
-// Records every write the mod makes to state, and accepts it.
+// Records every write the mod makes to state, and lets it through to the store.
 function writes(on: On) {
   const seen: StateWrite[] = []
-  on('state.set', (_, e) => {
+  on('state.set', (_, e, next) => {
     seen.push(e)
 
-    return { value: { isSet: true, version: 1 } }
+    return next(e)
   })
 
   return seen
@@ -80,5 +85,165 @@ describe('timing', () => {
     expect(result.result).toMatchObject({ stdout: 'ok' })
     expect(ran).toBe(1)
     expect(writesSeen).toBe(2)
+  })
+})
+
+// A ToolUse row's props: a finished call unless `over` says otherwise.
+function useProps(id: string, over: Record<string, unknown> = {}) {
+  return {
+    tool_use_id: id,
+    tool: 'Bash',
+    input: { command: 'make test' },
+    isRunning: false,
+    isErrored: false,
+    isInterrupted: false,
+    ...over,
+  }
+}
+
+// Times a Bash call of `ms` and returns its id once it has ended.
+async function timedCall($: Engine, on: On, ms: number, tool = 'Bash') {
+  const clock = mock.clock(on, { now: T0 })
+  const seen: { id?: string } = {}
+  writes(on)
+  on('tool.call', { tool: tool as 'Bash' }, async (_, e) => {
+    seen.id = e.tool_use_id
+    await clock.sleep(ms)
+
+    return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
+  const call = $.tool.call({ tool: tool as 'Bash', command: 'make test' })
+  await clock.advance(ms)
+  await call
+
+  return { id: seen.id as string, clock }
+}
+
+async function mountUse($: Engine, id: string, props: Record<string, unknown>, extra: { surface?: 'terminal' | 'desktop'; viewport?: { columns: number; rows: number } } = {}) {
+  return $.ui.mount({
+    plugin: 'progress-bars',
+    surface: extra.surface ?? 'terminal',
+    component: 'ToolUse',
+    requestId: id,
+    props: useProps(id, props),
+    viewport: extra.viewport,
+  } as never)
+}
+
+describe('tool rows as bars', () => {
+  test('a finished call is a green bar with its time', async ($, on) => {
+    const { id } = await timedCall($, on, 14_000)
+    const ui = await mountUse($, id, {})
+
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(14_000), color: 'success', time: '14s' })
+    await ui.unmount()
+  })
+
+  test('a running call is an accent bar that grows', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    const seen: { id?: string } = {}
+    writes(on)
+    bash(on, clock, seen)
+
+    const call = $.tool.call({ tool: 'Bash', command: 'make test' })
+    await clock.advance(5_000)
+    const ui = await mountUse($, seen.id as string, { isRunning: true })
+
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(5_000), color: 'claude', time: '5s' })
+    await clock.advance(55_000)
+    await ui.redraw()
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(60_000), color: 'claude', time: '1m 0s' })
+    await ui.unmount()
+    await call
+  })
+
+  test('a failed call is red', async ($, on) => {
+    const { id } = await timedCall($, on, 14_000)
+    const ui = await mountUse($, id, { isErrored: true })
+
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(14_000), color: 'error', time: '14s' })
+    await ui.unmount()
+  })
+
+  test('an interrupted call is yellow', async ($, on) => {
+    const { id } = await timedCall($, on, 14_000)
+    const ui = await mountUse($, id, { isInterrupted: true, isErrored: true })
+
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(14_000), color: 'warning', time: '14s' })
+    await ui.unmount()
+  })
+
+  test('the result block under a bar draws nothing', async ($, on) => {
+    const { id } = await timedCall($, on, 14_000)
+    const ui = await $.ui.mount({
+      plugin: 'progress-bars',
+      surface: 'terminal',
+      component: 'ToolResult',
+      requestId: id,
+      props: { tool_use_id: id, tool: 'Bash', output: { stdout: 'ok', stderr: '', interrupted: false }, isErrored: false },
+    } as never)
+
+    expect(await ui.findAll({ type: 'Text' })).toEqual([])
+    await ui.unmount()
+  })
+
+  test('a narrow terminal shrinks the bar so bar and time fit one line', async ($, on) => {
+    const { id } = await timedCall($, on, 600_000)
+    const ui = await mountUse($, id, {}, { viewport: { columns: 30, rows: 20 } })
+
+    const { glyphs, time } = await readBar(ui)
+    expect(glyphs + 2 + 1 + time.length).toBeLessThanOrEqual(30)
+    expect(time).toBe('10m 0s')
+    await ui.unmount()
+  })
+
+  describe('kept as the engine draws them', () => {
+    // Each case mounts the row and its result under the engine's drawing.
+    async function keeps($: Engine, id: string, use: Record<string, unknown>, surface: 'terminal' | 'desktop' = 'terminal') {
+      const ui = await mountUse($, id, use, { surface })
+      expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
+      await ui.unmount()
+
+      const result = await $.ui.mount({
+        plugin: 'progress-bars',
+        surface,
+        component: 'ToolResult',
+        requestId: id,
+        props: { tool_use_id: id, tool: use.tool ?? 'Bash', output: use.output, isErrored: use.isErrored ?? false, isExpanded: use.isExpanded },
+      } as never)
+      expect((await result.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
+      await result.unmount()
+    }
+
+    test('an expanded row', async ($, on) => {
+      engine(on)
+      const { id } = await timedCall($, on, 14_000)
+      await keeps($, id, { isExpanded: true })
+    })
+
+    test('a desktop surface', async ($, on) => {
+      engine(on)
+      const { id } = await timedCall($, on, 14_000)
+      await keeps($, id, {}, 'desktop')
+    })
+
+    for (const tool of KEEP_TOOLS) {
+      test(`the ${tool} tool`, async ($, on) => {
+        engine(on)
+        const { id } = await timedCall($, on, 14_000, tool)
+        await keeps($, id, { tool })
+      })
+    }
+
+    test('an errored call whose output is a refusal', async ($, on) => {
+      engine(on)
+      const { id } = await timedCall($, on, 14_000)
+      await keeps($, id, { isErrored: true, output: `${REFUSED_PREFIX}: the command was declined.` })
+    })
+
+    test('an id with no recorded time', async ($, on) => {
+      engine(on)
+      await keeps($, 'toolu_never_called', {})
+    })
   })
 })
