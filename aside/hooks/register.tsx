@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelForkResult, Register } from 'claude-code'
 
 import type { Entry } from '../types'
+import { fitTables } from './tables'
 import { FRESH_SYSTEM, buildAsk, isPending } from './thread'
 
 type Engine = EngineInterface
@@ -149,6 +150,9 @@ export const register: Register = on => {
     const isBusy = list.some(isPending)
     const ui = $.ui.resolve(e)
     const { Box, Button, Markdown, Text } = ui
+    // The terminal sizes a table to the terminal, not to the pane, which is
+    // narrower only while docked beside the transcript.
+    const room = e.surface === 'terminal' && e.props.placement === 'dock' ? e.props.bodyColumns : Infinity
 
     return (
       <Box flexDirection="column" gap={1}>
@@ -161,7 +165,7 @@ export const register: Register = on => {
               › {entry.question}
             </Text>
             {entry.answer !== undefined ? (
-              <Markdown text={entry.answer} />
+              <Markdown text={fitTables(entry.answer, room)} />
             ) : entry.error !== undefined ? (
               <Text color="red">{entry.error}</Text>
             ) : (

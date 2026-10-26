@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { ModelForkResult, On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
+import { fitTables } from '../hooks/tables'
 import { buildAsk } from '../hooks/thread'
 
 const PANE = {
@@ -174,6 +175,87 @@ describe('the pane', () => {
       expect((await ui.find({ key: 'ask' })) === undefined).toBe(surface === 'mobile')
       await ui.unmount()
     }
+  })
+})
+
+// 109 cells wide as the terminal draws it: wider than any docked pane.
+const WIDE = [
+  'Here is the comparison:',
+  '',
+  '| Terminal | GPU rendering | Image protocol | Notes |',
+  '| --- | --- | --- | --- |',
+  '| Ghostty | Yes, Metal on macOS and OpenGL on Linux | Kitty graphics protocol | Fast startup, native tabs |',
+  '| iTerm2 | Optional, Metal renderer | iTerm2 inline images | Mature, heavier on memory |',
+  '',
+  'Pick Ghostty.',
+].join('\n')
+
+const WIDE_AS_LIST = [
+  'Here is the comparison:',
+  '',
+  '**Ghostty**',
+  '- GPU rendering: Yes, Metal on macOS and OpenGL on Linux',
+  '- Image protocol: Kitty graphics protocol',
+  '- Notes: Fast startup, native tabs',
+  '',
+  '**iTerm2**',
+  '- GPU rendering: Optional, Metal renderer',
+  '- Image protocol: iTerm2 inline images',
+  '- Notes: Mature, heavier on memory',
+  '',
+  'Pick Ghostty.',
+].join('\n')
+
+const NARROW = ['| Key | Value |', '| --- | --- |', '| a | 1 |'].join('\n')
+
+describe('tables', () => {
+  // The terminal lays a table out for the whole terminal, so one wider than
+  // a docked pane had each of its rows wrapped at the pane's edge.
+  test('a table wider than the docked pane comes as one block per row', async ($, on) => {
+    const clock = mock.clock(on)
+    engine(on, [answered(WIDE), answered(NARROW)])
+    await start($)
+
+    await aside($, 'compare?')
+    await clock.advance(1)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.input({ key: 'ask', text: 'short?' })
+    await clock.advance(1)
+
+    expect((await ui.findAll({ type: 'Markdown' })).map(found => found.text)).toEqual([WIDE_AS_LIST, NARROW])
+    await ui.unmount()
+  })
+
+  test('stays a table where the pane spans the terminal, or off the terminal', async ($, on) => {
+    const clock = mock.clock(on)
+    engine(on, [answered(WIDE)])
+    await start($)
+    await aside($, 'compare?')
+    await clock.advance(1)
+
+    const inline = await $.ui.mount({ ...PANE, props: { ...PANE.props, placement: 'inline' }, surface: 'terminal' })
+    expect((await inline.find({ type: 'Markdown' }))?.text).toBe(WIDE)
+    await inline.unmount()
+
+    const desktop = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    expect((await desktop.find({ type: 'Markdown' }))?.text).toBe(WIDE)
+    await desktop.unmount()
+  })
+
+  test('counts a wide character as two cells', () => {
+    // 53 cells wide: 14 for the first column, 36 for the second, 3 rules.
+    const table = ['| ファイル | 説明 |', '| --- | --- |', '| register.tsx | フック：コマンド、ペイン、タイマー |'].join('\n')
+
+    expect(fitTables(table, 53)).toBe(table)
+    expect(fitTables(table, 52)).toBe('**register.tsx**\n- 説明: フック：コマンド、ペイン、タイマー')
+  })
+
+  test('leaves a table in a code fence alone, and keeps an escaped pipe in its cell', () => {
+    const fenced = ['```', WIDE, '```'].join('\n')
+    const piped = ['| Name | Use |', '| --- | --- |', '| or | a \\| b |'].join('\n')
+
+    expect(fitTables(fenced, 20)).toBe(fenced)
+    expect(fitTables(piped, 10)).toBe('**or**\n- Use: a \\| b')
   })
 })
 
