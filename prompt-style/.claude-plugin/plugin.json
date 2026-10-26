@@ -1,0 +1,5 @@
+{
+  "name": "prompt-style",
+  "version": "0.1.0",
+  "description": "Draws your own prompts in the transcript beside an orange bar instead of on a full-width grey band"
+}

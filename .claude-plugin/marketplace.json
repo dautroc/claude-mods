@@ -13,6 +13,11 @@
       "name": "aside",
       "source": "./aside",
       "description": "Side questions about the current chat in a pane beside it, with follow-ups in the same thread, kept out of the main conversation"
+    },
+    {
+      "name": "prompt-style",
+      "source": "./prompt-style",
+      "description": "Draws your own prompts in the transcript beside an orange bar instead of on a full-width grey band"
     }
   ]
 }

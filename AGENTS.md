@@ -22,3 +22,8 @@
 - Each question is a `$.model.fork` over the main conversation, with the side thread's earlier exchanges in the prompt, so nothing is added to the main conversation. The main model sees only `/aside` with empty arguments. A spike on 2026-10-26 confirmed both.
 - Questions run on a `$.clock.after` timer, so the command and the field return at once. The thread lives in `$.state` for the session; `/clear` empties it.
 - Hand off and `/aside-handoff` fork the same way with the answered exchanges and write a request in the person's voice; `$.prompt.fill` puts it in the box (appended after a draft), never submitted. No call moves the keys from a pane to the prompt box: the person presses Esc.
+
+## prompt-style
+
+- On the terminal, a `UserMessage` row from `composer` (typed here, and still so on resume) or `bridge` (Remote Control) is drawn beside a one-column `claude` bar with no background, in place of the engine's full-width `userMessageBackground` band. Every other row, and every other surface, goes to `next`.
+- The engine raises no `UserMessage` for a slash command's echo (`❯ /reload-plugins`) or for a prompt a plugin submits, `asUser` or not (prompt-enhancer's Send), so those keep the band. A spike on 2026-10-26 confirmed both.
