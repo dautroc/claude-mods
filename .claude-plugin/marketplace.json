@@ -18,11 +18,6 @@
       "name": "prompt-style",
       "source": "./prompt-style",
       "description": "Draws your own prompts in the transcript beside an orange bar instead of on a full-width grey band"
-    },
-    {
-      "name": "progress-bars",
-      "source": "./progress-bars",
-      "description": "Draws tool work, waits and turn footers in the transcript as bars whose length shows how long they took"
     }
   ]
 }

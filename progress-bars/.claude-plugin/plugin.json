@@ -1,6 +1,0 @@
-{
-  "name": "progress-bars",
-  "version": "0.1.0",
-  "description": "Draws tool work, waits and turn footers in the transcript as bars whose length shows how long they took",
-  "types": "./types/index.d.ts"
-}
