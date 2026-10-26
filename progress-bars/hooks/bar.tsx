@@ -29,7 +29,7 @@ export function toneOf(row: { isRunning: boolean; isErrored: boolean; isInterrup
 
 // The bar for a row's time, indented two cells with the time after one space.
 // The glyphs shrink to fit the terminal's width.
-export function drawBar($: EngineInterface, e: RenderInput<'ToolUse' | 'ToolResult'>, ms: number, tone: BarTone) {
+export function drawBar($: EngineInterface, e: RenderInput<'ToolUse' | 'ToolResult' | 'ToolGroup'>, ms: number, tone: BarTone) {
   const { Box, Text } = $.ui.resolve(e)
   const label = ' ' + formatDuration(ms)
   const columns = e.viewport?.columns ?? 80
@@ -45,7 +45,7 @@ export function drawBar($: EngineInterface, e: RenderInput<'ToolUse' | 'ToolResu
 
 // The result block under a bar draws nothing: the bar already stands for the
 // call.
-export function drawNothing($: EngineInterface, e: RenderInput<'ToolUse' | 'ToolResult'>) {
+export function drawNothing($: EngineInterface, e: RenderInput<'ToolUse' | 'ToolResult' | 'ToolGroup'>) {
   const { Box } = $.ui.resolve(e)
 
   return <Box />

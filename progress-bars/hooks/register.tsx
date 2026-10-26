@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderInput } from 'claude-code'
+import type { EngineInterface, Register, RenderInput, ToolGroupCall } from 'claude-code'
 
 import { type BarTone, drawBar, drawNothing, toneOf } from './bar'
 import { SHAPE } from './state'
@@ -42,6 +42,50 @@ async function toolUseMs($: Engine, id: string, isRunning: boolean): Promise<num
   }
 
   return time.end - time.start
+}
+
+// The span of a run of calls: from the earliest start to the latest end, or
+// to now while any call runs. Undefined when the mod can't establish it.
+async function groupSpan($: Engine, calls: readonly ToolGroupCall[]): Promise<{ ms: number; isRunning: boolean } | undefined> {
+  if (calls.length === 0) {
+    return undefined
+  }
+  let start = Infinity
+  let end = -Infinity
+  let isRunning = false
+  for (const row of calls) {
+    if (row.tool_use_id === undefined) {
+      return undefined
+    }
+    const call = atom({ plugin: 'progress-bars', key: 'calls', id: row.tool_use_id } as const, null, { shape: SHAPE })
+    const time = await read($, call)
+    if (!time) {
+      return undefined
+    }
+    start = Math.min(start, time.start)
+    if (row.isRunning) {
+      isRunning = true
+    } else if (time.end === undefined) {
+      return undefined
+    } else {
+      end = Math.max(end, time.end)
+    }
+  }
+  if (isRunning) {
+    await read($, now)
+    end = await $.clock.now()
+  }
+
+  return { ms: end - start, isRunning }
+}
+
+// The tone of a run: the same order as one row's, across all its calls.
+function groupTone(calls: readonly ToolGroupCall[]): BarTone {
+  return toneOf({
+    isRunning: calls.some(row => row.isRunning),
+    isErrored: calls.some(row => row.isErrored),
+    isInterrupted: calls.some(row => row.isInterrupted),
+  })
 }
 
 type BarRow = {
@@ -108,5 +152,18 @@ export const register: Register = on => {
     const hit = await barFor($, e, { ...e.props, isRunning: false, isInterrupted: false })
 
     return hit ? drawNothing($, e) : next(e)
+  }).catch(($, e, next) => next(e))
+
+  // A run of calls is one bar of its span, whether or not isCallsOnly is set.
+  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || e.props.isExpanded === true) {
+      return next(e)
+    }
+    if (e.props.calls.length === 0) {
+      return drawNothing($, e)
+    }
+    const span = await groupSpan($, e.props.calls)
+
+    return span ? drawBar($, e, span.ms, groupTone(e.props.calls)) : next(e)
   }).catch(($, e, next) => next(e))
 }
