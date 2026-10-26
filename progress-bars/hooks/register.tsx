@@ -2,7 +2,9 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderInput, ToolGroupCall } from 'claude-code'
 
 import { type BarTone, drawBar, drawNothing, toneOf } from './bar'
+import { historyTimes } from './history'
 import { SHAPE } from './state'
+import { ensureTicking, markEnded, markStarted } from './ticker'
 
 type Engine = EngineInterface
 
@@ -24,24 +26,52 @@ export const REFUSED_PREFIX = "The user doesn't want to proceed with this tool u
 // Read by the drawing so a running call's bar grows; the ticker writes it.
 const now = atom({ plugin: 'progress-bars', key: 'now' } as const, 0)
 
+type Known = { start?: number; end?: number }
+
+// The start and end of each row's call: from the state, and for what the state
+// lacks, from the session file. A running row needs only its start.
+async function knownTimes($: Engine, rows: readonly { tool_use_id: string; isRunning: boolean }[]): Promise<Map<string, Known>> {
+  const known = new Map<string, Known>()
+  const lacking: string[] = []
+  for (const row of rows) {
+    const call = atom({ plugin: 'progress-bars', key: 'calls', id: row.tool_use_id } as const, null, { shape: SHAPE })
+    const time = await read($, call)
+    known.set(row.tool_use_id, { start: time?.start, end: time?.end })
+    if (time?.start === undefined || (!row.isRunning && time.end === undefined)) {
+      lacking.push(row.tool_use_id)
+    }
+  }
+  if (lacking.length > 0) {
+    const history = await historyTimes($, lacking)
+    for (const id of lacking) {
+      const found = history.get(id)
+      const mine = known.get(id) ?? {}
+      mine.start ??= found?.start
+      mine.end ??= found?.end
+      known.set(id, mine)
+    }
+  }
+
+  return known
+}
+
 // How long a call has taken, or undefined when the mod can't establish it.
 // A running call is measured up to now.
 async function toolUseMs($: Engine, id: string, isRunning: boolean): Promise<number | undefined> {
-  const call = atom({ plugin: 'progress-bars', key: 'calls', id } as const, null, { shape: SHAPE })
-  const time = await read($, call)
-  if (!time) {
+  const { start, end } = (await knownTimes($, [{ tool_use_id: id, isRunning }])).get(id) ?? {}
+  if (start === undefined) {
     return undefined
   }
   if (isRunning) {
     await read($, now)
 
-    return (await $.clock.now()) - time.start
+    return (await $.clock.now()) - start
   }
-  if (time.end === undefined) {
+  if (end === undefined) {
     return undefined
   }
 
-  return time.end - time.start
+  return end - start
 }
 
 // The span of a run of calls: from the earliest start to the latest end, or
@@ -50,16 +80,21 @@ async function groupSpan($: Engine, calls: readonly ToolGroupCall[]): Promise<{ 
   if (calls.length === 0) {
     return undefined
   }
-  let start = Infinity
-  let end = -Infinity
-  let isRunning = false
+  const rows: { tool_use_id: string; isRunning: boolean }[] = []
   for (const row of calls) {
     if (row.tool_use_id === undefined) {
       return undefined
     }
-    const call = atom({ plugin: 'progress-bars', key: 'calls', id: row.tool_use_id } as const, null, { shape: SHAPE })
-    const time = await read($, call)
-    if (!time) {
+    rows.push({ tool_use_id: row.tool_use_id, isRunning: row.isRunning })
+  }
+  const known = await knownTimes($, rows)
+
+  let start = Infinity
+  let end = -Infinity
+  let isRunning = false
+  for (const row of rows) {
+    const time = known.get(row.tool_use_id)
+    if (time?.start === undefined) {
       return undefined
     }
     start = Math.min(start, time.start)
@@ -130,12 +165,23 @@ export const register: Register = on => {
     const call = atom({ plugin: 'progress-bars', key: 'calls', id: e.tool_use_id } as const, null, { shape: SHAPE })
     const start = await $.clock.now()
     await update($, call, () => ({ start }))
+    markStarted(e.tool_use_id)
+    ensureTicking($)
     try {
       return await next(e)
     } finally {
+      markEnded(e.tool_use_id)
       const end = await $.clock.now()
       await update($, call, () => ({ start, end }))
     }
+  }).catch(($, e, next) => next(e))
+
+  // A session that starts while an agent or call is still out, after a reload,
+  // needs the ticker running.
+  on('session.start', ($, e, next) => {
+    ensureTicking($)
+
+    return next(e)
   }).catch(($, e, next) => next(e))
 
   // A standalone tool row on the terminal is a bar of its time.

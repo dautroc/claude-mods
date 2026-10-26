@@ -69,8 +69,15 @@ describe('timing', () => {
     // a refused write throws into the hook or the engine skips it, so this
     // test cannot tell the .catch apart: it checks that the result still comes
     // back and the tool ran once.
+    // Only the call's own writes are counted: the ticker's clock writes pass.
     let writesSeen = 0
-    on('state.set', () => (++writesSeen === 1 ? { value: { isSet: true, version: 1 } } : { deny: 'refused' }))
+    on('state.set', (_, e, next) => {
+      if (e.key !== 'calls') {
+        return next(e)
+      }
+
+      return ++writesSeen === 1 ? { value: { isSet: true, version: 1 } } : { deny: 'refused' }
+    })
     let ran = 0
     on('tool.call', { tool: 'Bash' }, async () => {
       ran += 1
@@ -187,7 +194,8 @@ describe('tool rows as bars', () => {
     await ui.unmount()
   })
 
-  test('a narrow terminal shrinks the bar so bar and time fit one line', async ($, on) => {
+  // A ten-minute call ticks 1 200 times under the mock clock, so it gets more than the default 5 s.
+  test('a narrow terminal shrinks the bar so bar and time fit one line', { timeoutMs: 30_000 }, async ($, on) => {
     const { id } = await timedCall($, on, 600_000)
     const ui = await mountUse($, id, {}, { viewport: { columns: 30, rows: 20 } })
 
@@ -245,5 +253,30 @@ describe('tool rows as bars', () => {
       engine(on)
       await keeps($, 'toolu_never_called', {})
     })
+  })
+})
+
+describe('the ticker', () => {
+  test('a running bar grows by the ticker alone', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    const seen: { id?: string } = {}
+    const wrote = writes(on)
+    bash(on, clock, seen)
+
+    engine(on)
+    const call = $.tool.call({ tool: 'Bash', command: 'make test' })
+    await clock.advance(1_000)
+    const ui = await mountUse($, seen.id as string, { isRunning: true })
+    expect((await readBar(ui)).time).toBe('1s')
+
+    await clock.advance(1_000)
+    expect((await readBar(ui)).time).toBe('2s')
+    await clock.advance(12_000)
+    await call
+
+    const after = wrote.length
+    await clock.advance(1_000)
+    expect(wrote.length).toBe(after)
+    await ui.unmount()
   })
 })
