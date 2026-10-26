@@ -1,25 +1,25 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelForkResult, Register } from 'claude-code'
 
-import type { Entry } from '../types'
 import { fitTables } from './tables'
-import { FRESH_SYSTEM, buildAsk, isPending } from './thread'
+import { FRESH_SYSTEM, buildAsk, buildHandoff, isAnswered, isPending } from './thread'
 
 type Engine = EngineInterface
-type Reply = { answer: string } | { error: string }
+type Reply = { answer: string } | { why: string }
 
 const PANE = 'aside'
 // Change the tag when Entry's fields change: it declines what an earlier
 // version stored, which outlives a reload.
 const thread = atom({ plugin: 'aside', key: 'thread' } as const, [], { shape: 'thread-1' })
 const draft = atom({ plugin: 'aside', key: 'draft' } as const, '')
+// True while a hand-off is being written.
+const handing = atom({ plugin: 'aside', key: 'handing' } as const, false)
 
-// The question typed after /aside, held here so that the command's record in
-// the main conversation carries no arguments.
+// What was typed after /aside or /aside-handoff, held here so that the
+// command's record in the main conversation carries no arguments.
 let typed = ''
 
-async function reply($: Engine, earlier: readonly Entry[], question: string): Promise<Reply> {
-  const prompt = buildAsk(earlier, question)
+async function reply($: Engine, prompt: string): Promise<Reply> {
   // The fork reads the main conversation as the model last saw it; nothing it
   // says is added to that conversation.
   let result: ModelForkResult = await $.model.fork({ prompt })
@@ -28,12 +28,12 @@ async function reply($: Engine, earlier: readonly Entry[], question: string): Pr
   }
 
   if (!result.isAnswered) {
-    return { error: `No answer: ${whyUnanswered(result)}.` }
+    return { why: whyUnanswered(result) }
   }
 
   const answer = result.text.trim()
 
-  return answer === '' ? { error: 'No answer: the model sent back no text.' } : { answer }
+  return answer === '' ? { why: 'the model sent back no text' } : { answer }
 }
 
 async function completeFresh($: Engine, prompt: string) {
@@ -75,9 +75,10 @@ async function ask($: Engine, question: string) {
   const id = crypto.randomUUID()
   await update($, thread, list => [...list, { id, question: text }])
   await toEnd($)
-  const got = await reply($, earlier, text)
+  const got = await reply($, buildAsk(earlier, text))
+  const done = 'answer' in got ? got : { error: `No answer: ${got.why}.` }
   // A New thread pressed meanwhile took the question away: the map finds none.
-  await update($, thread, list => list.map(entry => (entry.id === id ? { ...entry, ...got } : entry)))
+  await update($, thread, list => list.map(entry => (entry.id === id ? { ...entry, ...done } : entry)))
   await toEnd($)
 }
 
@@ -85,6 +86,47 @@ async function ask($: Engine, question: string) {
 // the answer lands in the pane whenever it comes.
 function askLater($: Engine, question: string) {
   $.clock.after(1, () => void ask($, question))
+}
+
+// Writes a request for the main conversation from the answered side
+// questions, and adds it to the prompt box for the person to edit and send.
+async function handOff($: Engine, wanted: string) {
+  const answered = (await read($, thread)).filter(isAnswered)
+  if (answered.length === 0) {
+    $.ui.toast('Nothing to hand off yet: no side question has an answer.')
+
+    return
+  }
+  if (await read($, handing)) {
+    $.ui.toast('Aside is still writing the hand-off.')
+
+    return
+  }
+
+  await update($, handing, () => true)
+  const got = await reply($, buildHandoff(answered, wanted.trim()))
+  await update($, handing, () => false)
+  if (!('answer' in got)) {
+    $.ui.toast(`Couldn't write the hand-off: ${got.why}.`)
+
+    return
+  }
+
+  // What the person typed meanwhile stays, the request after it.
+  const box = (await $.prompt.read()).text
+  const filled =
+    box.trim() === ''
+      ? await $.prompt.fill({ text: got.answer, mode: 'replace' })
+      : await $.prompt.fill({ text: `\n\n${got.answer}`, mode: 'append' })
+  $.ui.toast(
+    filled.isFilled
+      ? 'The hand-off is in the prompt box. Edit it, then press Enter.'
+      : `Couldn't put the hand-off in the prompt box${filled.refusal === 'dialog' ? ' while a dialog is open' : ''}.`,
+  )
+}
+
+function handOffLater($: Engine, wanted: string) {
+  $.clock.after(1, () => void handOff($, wanted))
 }
 
 async function submit($: Engine, value: string) {
@@ -109,18 +151,25 @@ export const register: Register = on => {
       argumentHint: '[question]',
       immediate: true,
     })
+    await $.command.register({
+      name: 'aside-handoff',
+      description: 'Write a request from the Aside thread into the prompt box, to send to the main conversation',
+      argumentHint: '[what you want done]',
+      immediate: true,
+    })
 
-    // A reload drops an answer that was on its way.
+    // A reload drops an answer or a hand-off that was on its way.
     await update($, thread, list =>
       list.map(entry => (isPending(entry) ? { ...entry, error: 'No answer: Claude Code reloaded the mod.' } : entry)),
     )
+    await update($, handing, () => false)
 
     return next(e)
   })
 
   // Registered first, so it runs first: the rows the main conversation keeps
-  // for this command then hold `/aside` and no question.
-  on('command.run', { command: 'aside' }, ($, e, next) => {
+  // for these commands then hold the command and no arguments.
+  on('command.run', { command: ['aside', 'aside-handoff'] }, ($, e, next) => {
     typed = e.args
 
     return next({ ...e, args: '' })
@@ -131,6 +180,14 @@ export const register: Register = on => {
     typed = ''
     await $.ui.open({ id: PANE, title: 'Aside', focus: true })
     askLater($, question)
+
+    return {}
+  })
+
+  on('command.run', { command: 'aside-handoff' }, $ => {
+    const wanted = typed
+    typed = ''
+    handOffLater($, wanted)
 
     return {}
   })
@@ -147,6 +204,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const list = await read($, thread)
     const typing = await read($, draft)
+    const isHanding = await read($, handing)
     const isBusy = list.some(isPending)
     const ui = $.ui.resolve(e)
     const { Box, Button, Markdown, Text } = ui
@@ -184,7 +242,16 @@ export const register: Register = on => {
             onSubmit={value => submit($, value)}
           />
         )}
-        {list.length > 0 && <Button key="new" label="New thread" onPress={() => reset($)} />}
+        {list.length > 0 && (
+          <Box gap={2}>
+            {isHanding ? (
+              <Text dimColor>Writing the hand-off…</Text>
+            ) : (
+              list.some(isAnswered) && <Button key="handoff" label="Hand off" onPress={() => handOffLater($, '')} />
+            )}
+            <Button key="new" label="New thread" onPress={() => reset($)} />
+          </Box>
+        )}
       </Box>
     )
   })

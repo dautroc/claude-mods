@@ -9,6 +9,6 @@ export type Entry = {
 
 declare module 'claude-code' {
   interface PluginState {
-    aside: { thread: Shaped<Entry[]>; draft: string }
+    aside: { thread: Shaped<Entry[]>; draft: string; handing: boolean }
   }
 }

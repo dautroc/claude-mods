@@ -26,10 +26,18 @@ function answered(text: string): ModelForkResult {
 }
 
 // Stands for the engine: a model that answers each fork with `replies` in
-// turn, and a record of what was asked, opened and toasted.
-function engine(on: On, replies: ModelForkResult[]) {
-  const seen = { asks: [] as string[], opens: [] as unknown[], toasts: [] as string[] }
+// turn, a prompt box holding `box.text`, and a record of what was asked,
+// opened, filled and toasted.
+function engine(on: On, replies: ModelForkResult[], box = { text: '' }) {
+  const seen = { asks: [] as string[], opens: [] as unknown[], fills: [] as unknown[], toasts: [] as string[] }
   on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('prompt.read', () => ({ value: { text: box.text, cursor: box.text.length } }))
+  on('prompt.fill', (_, e) => {
+    seen.fills.push({ text: e.text, mode: e.mode })
+    box.text = e.mode === 'append' ? box.text + e.text : e.text
+
+    return { isFilled: true }
+  })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('ui.open', (_, e) => {
     seen.opens.push(e)
@@ -55,9 +63,9 @@ async function start($: Engine) {
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 }
 
-async function aside($: Engine, args: string) {
+async function aside($: Engine, args: string, command = 'aside') {
   return $.command.run({
-    command: 'aside',
+    command,
     args,
     origin: { kind: 'composer' },
     presentation: { isFullscreen: true, columns: 160 },
@@ -175,6 +183,86 @@ describe('the pane', () => {
       expect((await ui.find({ key: 'ask' })) === undefined).toBe(surface === 'mobile')
       await ui.unmount()
     }
+  })
+})
+
+describe('hand off', () => {
+  const FOUND = 'Because the cache key leaves out the locale.'
+  const REQUEST = 'Key the cache by locale in src/cache.ts, then rerun the i18n tests.'
+
+  test('Hand off writes a request from the thread into the prompt box', async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = engine(on, [answered(FOUND), answered(REQUEST)])
+    await start($)
+
+    await aside($, 'why is the page stale?')
+    await clock.advance(1)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'handoff' })
+    await clock.advance(1)
+
+    expect(seen.asks[1]).toContain('<question>\nwhy is the page stale?\n</question>\n<answer>\n' + FOUND + '\n</answer>')
+    expect(seen.asks[1]).toContain('Write the message they will send you')
+    expect(seen.fills).toEqual([{ text: REQUEST, mode: 'replace' }])
+    expect(seen.toasts).toEqual(['The hand-off is in the prompt box. Edit it, then press Enter.'])
+    await ui.unmount()
+  })
+
+  test('adds the request after a draft already in the box', async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = engine(on, [answered(FOUND), answered(REQUEST)], { text: 'and run the linter' })
+    await start($)
+
+    await aside($, 'why?')
+    await clock.advance(1)
+    await aside($, '', 'aside-handoff')
+    await clock.advance(1)
+
+    expect(seen.fills).toEqual([{ text: '\n\n' + REQUEST, mode: 'append' }])
+  })
+
+  test('/aside-handoff passes its text on as what to ask for', async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = engine(on, [answered(FOUND), answered(REQUEST)])
+    await start($)
+
+    await aside($, 'why?')
+    await clock.advance(1)
+    const ran = await aside($, 'fix it, skip the tests', 'aside-handoff')
+    await clock.advance(1)
+
+    expect(ran.text).toBeUndefined()
+    expect(seen.asks[1]).toContain('What the user wants done with it:\n\nfix it, skip the tests')
+    expect(seen.fills).toEqual([{ text: REQUEST, mode: 'replace' }])
+  })
+
+  test('with no answer yet, has nothing to hand off', async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = engine(on, [])
+    await start($)
+
+    await aside($, '', 'aside-handoff')
+    await clock.advance(1)
+
+    expect(seen.asks).toHaveLength(0)
+    expect(seen.toasts).toEqual(['Nothing to hand off yet: no side question has an answer.'])
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await ui.find({ key: 'handoff' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('says why when the request could not be written, and leaves the box alone', async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = engine(on, [answered(FOUND), { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: USAGE }])
+    await start($)
+
+    await aside($, 'why?')
+    await clock.advance(1)
+    await aside($, '', 'aside-handoff')
+    await clock.advance(1)
+
+    expect(seen.fills).toHaveLength(0)
+    expect(seen.toasts).toEqual(["Couldn't write the hand-off: the API answered 529 (overloaded)."])
   })
 })
 

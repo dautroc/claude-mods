@@ -21,3 +21,4 @@
 - `/aside [question]` opens the Aside pane, docked beside the transcript in fullscreen, and asks there; the pane's field takes follow-ups in the same thread. `/btw` is a built-in, so the command can't take that name.
 - Each question is a `$.model.fork` over the main conversation, with the side thread's earlier exchanges in the prompt, so nothing is added to the main conversation. The main model sees only `/aside` with empty arguments. A spike on 2026-10-26 confirmed both.
 - Questions run on a `$.clock.after` timer, so the command and the field return at once. The thread lives in `$.state` for the session; `/clear` empties it.
+- Hand off and `/aside-handoff` fork the same way with the answered exchanges and write a request in the person's voice; `$.prompt.fill` puts it in the box (appended after a draft), never submitted. No call moves the keys from a pane to the prompt box: the person presses Esc.
