@@ -1,0 +1,6 @@
+{
+  "name": "aside",
+  "version": "0.1.0",
+  "description": "Side questions about the current chat in a pane beside it, with follow-ups in the same thread, kept out of the main conversation",
+  "types": "./types/index.d.ts"
+}

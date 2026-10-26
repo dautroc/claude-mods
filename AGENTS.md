@@ -7,6 +7,7 @@
 - `make test` runs `claude plugin validate` on the marketplace and each mod, then each mod's `claude plugin test`.
 - The engine lays the API's types in `<mod>/.claude-plugin/types/` (ignored) only when it loads the mod from a folder it hot-reloads. The mod's `tsconfig.json` extends them, so `tsc -p <mod>` works only after such a load.
 - `$` may be passed only to functions declared at the top level of the hooks module: `claude plugin validate` refuses a helper defined inside `register`.
+- The main model reads a mod's slash command as a record: `<command-name>/x</command-name>` with its arguments. To keep the arguments out, an outer `command.run` hook keeps them and passes `next` empty `args`; the hook beneath answers from what it kept (see `aside`).
 - Running `claude -p` from an agent's shell to try a mod needs `CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT` and `CLAUDE_CODE_*` unset; `--plugin-dir <copy>` loads it. There is no prompt box under `-p`, so `$.prompt.fill` answers `isFilled: false`.
 
 ## prompt-enhancer
@@ -14,3 +15,9 @@
 - ✨ Enhance in the band above the prompt box, or `/enhance <prompt>`, rewrites the draft in place; Send submits the box, Undo puts the draft back. Enter is untouched.
 - The rewrite is a `$.model.fork` over the session, so it reads the system prompt, instruction files, skills and the whole chat. Before the session's first turn there is nothing to fork: it reads the CLAUDE.md and AGENTS.md files from the project root up, plus the non-built-in commands, and calls `$.model.complete` on the session's model.
 - The rewrite rules live in `hooks/enhance.ts`. A prompt sent with Send goes through `$.prompt.submit`, which does not expand `@file` mentions, so the rules ask for plain paths.
+
+## aside
+
+- `/aside [question]` opens the Aside pane, docked beside the transcript in fullscreen, and asks there; the pane's field takes follow-ups in the same thread. `/btw` is a built-in, so the command can't take that name.
+- Each question is a `$.model.fork` over the main conversation, with the side thread's earlier exchanges in the prompt, so nothing is added to the main conversation. The main model sees only `/aside` with empty arguments. A spike on 2026-10-26 confirmed both.
+- Questions run on a `$.clock.after` timer, so the command and the field return at once. The thread lives in `$.state` for the session; `/clear` empties it.
