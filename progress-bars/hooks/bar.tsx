@@ -45,7 +45,7 @@ export function drawBar($: EngineInterface, e: RenderInput<'ToolUse' | 'ToolResu
 
 // The result block under a bar draws nothing: the bar already stands for the
 // call.
-export function drawNothing($: EngineInterface, e: RenderInput<'ToolUse' | 'ToolResult' | 'ToolGroup'>) {
+export function drawNothing($: EngineInterface, e: RenderInput<'ToolUse' | 'ToolResult' | 'ToolGroup' | 'UserMessage'>) {
   const { Box } = $.ui.resolve(e)
 
   return <Box />

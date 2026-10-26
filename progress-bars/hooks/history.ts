@@ -32,6 +32,9 @@ const fileMisses = new Map<string, number>()
 const partials = new Map<string, { time?: CallTime; retryAt: number }>()
 // Per uuid: the time a missed lookup may be asked again.
 const uuidMisses = new Map<string, number>()
+// A tool call's name, kept once found, and the time a missed lookup may be asked again.
+const names = new Map<string, string>()
+const nameMisses = new Map<string, number>()
 
 // One JSON object per line. A line that does not parse is skipped: a cut last
 // line of a truncated grep output is one.
@@ -227,4 +230,26 @@ export async function entryByUuid($: Engine, uuid: string): Promise<SessionEntry
   }
 
   return hit
+}
+
+// The name of the tool a call ran, by its id, or undefined when none is found.
+export async function toolNameOf($: Engine, id: string): Promise<string | undefined> {
+  const known = names.get(id)
+  if (known !== undefined) {
+    return known
+  }
+  const now = await $.clock.now()
+  const retryAt = nameMisses.get(id)
+  if (retryAt !== undefined && now < retryAt) {
+    return undefined
+  }
+  const name = toolNameFrom(await lookup($, [`"id":"${id}"`]), id)
+  if (name === undefined) {
+    nameMisses.set(id, now + MISS_TTL_MS)
+  } else {
+    names.set(id, name)
+    nameMisses.delete(id)
+  }
+
+  return name
 }

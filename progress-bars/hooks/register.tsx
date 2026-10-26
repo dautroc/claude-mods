@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderInput, ToolGroupCall } from 'claude-code'
 
 import { type BarTone, drawBar, drawNothing, toneOf } from './bar'
-import { entryByUuid, historyTimes } from './history'
+import { entryByUuid, historyTimes, toolNameOf } from './history'
 import { SHAPE } from './state'
 import { ensureTicking, markEnded, markStarted } from './ticker'
 import { waitFor } from './waits'
@@ -159,6 +159,25 @@ async function barFor(
   return { ms, tone: toneOf(row) }
 }
 
+// Whether a background agent's finished notice is one this session launched:
+// the state knows the agent, or the session file says its launching call was Agent.
+async function isAgentNotice($: Engine, task: { id?: string; toolUseId?: string }): Promise<boolean> {
+  const runs = await read($, agents)
+  if (runs.some(run => run.id === task.id || (task.toolUseId !== undefined && run.toolUseId === task.toolUseId))) {
+    return true
+  }
+  if (task.toolUseId === undefined) {
+    return false
+  }
+
+  return (await toolNameOf($, task.toolUseId)) === 'Agent'
+}
+
+// Whether a peer row is an agent's hand-back report, which the saved entry marks.
+async function isHandback($: Engine, uuid: string): Promise<boolean> {
+  return (await entryByUuid($, uuid))?.origin?.handback === true
+}
+
 export const register: Register = on => {
   // Records when a main-loop tool call starts and ends. A fault here never
   // blocks the call: the tool runs and answers as it would without the mod.
@@ -280,5 +299,21 @@ export const register: Register = on => {
     const span = await groupSpan($, e.props.calls)
 
     return span ? drawBar($, e, span.ms, groupTone(e.props.calls)) : next(e)
+  }).catch(($, e, next) => next(e))
+
+  // A background agent's finished notice and its hand-back report are hidden:
+  // the agent's own bar stands for it. Every other row passes through untouched.
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    const kind = e.props.origin.kind
+    if (kind !== 'task-notification' && kind !== 'peer') {
+      return next(e)
+    }
+    if (e.surface !== 'terminal' || e.props.isExpanded === true) {
+      return next(e)
+    }
+    const hidden =
+      kind === 'task-notification' ? e.props.task !== undefined && (await isAgentNotice($, e.props.task)) : await isHandback($, e.requestId)
+
+    return hidden ? drawNothing($, e) : next(e)
   }).catch(($, e, next) => next(e))
 }
