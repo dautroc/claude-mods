@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { On, StateWrite } from 'claude-code'
 
 import { barCells } from '../hooks/scale'
 import { waitFor } from '../hooks/waits'
@@ -153,5 +153,143 @@ describe('the turn footer as a bar', () => {
     const ui = await mountFooter($, 'u5', { durationMs: 10_000 }, 'desktop')
     expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
     await ui.unmount()
+  })
+})
+
+// Records the writes the mod makes to one state key, and lets them through.
+function writesTo(on: On, key: string) {
+  const seen: StateWrite[] = []
+  on('state.set', (_, e, next) => {
+    if (e.key === key) {
+      seen.push(e)
+    }
+
+    return next(e)
+  })
+
+  return seen
+}
+
+// Ends a background agent's turn: `over` sets the outcome fields.
+function completeAgent($: Engine, agentId: string, over: Record<string, unknown>) {
+  return $.turn.complete({ agentId, turnId: `${agentId}-t`, answer: '', durationMs: 1, isAborted: false, reason: 'answer', ...over } as never)
+}
+
+// Starts the main loop's next turn.
+function nextTurn($: Engine) {
+  return $.turn.start({ text: '', turnId: 'main-next' } as never)
+}
+
+// A footer whose turn left `agentId` running, and the clock 30 s into the wait.
+async function waitingOn($: Engine, on: On, clock: { advance: (ms: number) => Promise<void> }, session: string, uuid: string, agentId: string) {
+  sessionWith(on, session, footerLine(uuid, T0 + 10_000, 1))
+  on('turn.start', () => ({ turnId: 'main-next' }))
+  on('turn.complete', () => ({ text: '' }))
+  await launchAgent($, on, agentId)
+  await clock.advance(40_000)
+}
+
+describe('the agent outcome mapping through the footer', () => {
+  test('an aborted agent makes the wait warning', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    await waitingOn($, on, clock, 's-killed', 'u10', 'ag10')
+    await completeAgent($, 'ag10', { isAborted: true, reason: 'aborted' })
+    await nextTurn($)
+
+    const ui = await mountFooter($, 'u10', { durationMs: 10_000 })
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(30_000), color: 'warning', time: '30s' })
+    await ui.unmount()
+  })
+
+  test('an agent whose turn errored makes the wait red', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    await waitingOn($, on, clock, 's-error', 'u11', 'ag11')
+    await completeAgent($, 'ag11', { reason: 'error' })
+    await nextTurn($)
+
+    const ui = await mountFooter($, 'u11', { durationMs: 10_000 })
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(30_000), color: 'error', time: '30s' })
+    await ui.unmount()
+  })
+
+  test('an agent whose turn was refused makes the wait red', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    await waitingOn($, on, clock, 's-refusal', 'u12', 'ag12')
+    await completeAgent($, 'ag12', { reason: 'refusal', refusal: { category: null, explanation: null } })
+    await nextTurn($)
+
+    const ui = await mountFooter($, 'u12', { durationMs: 10_000 })
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(30_000), color: 'error', time: '30s' })
+    await ui.unmount()
+  })
+})
+
+describe('the turn hooks', () => {
+  test('a mounted footer turns green without a redraw once its agent ends', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    await waitingOn($, on, clock, 's-live', 'u13', 'ag13')
+
+    const ui = await mountFooter($, 'u13', { durationMs: 10_000 })
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(30_000), color: 'claude', time: '30s' })
+    await completeAgent($, 'ag13', {})
+    await nextTurn($)
+
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(30_000), color: 'success', time: '30s' })
+    await ui.unmount()
+  })
+
+  test('a subagent turn start is not recorded', async ($, on) => {
+    mock.clock(on, { now: T0 })
+    const wrote = writesTo(on, 'turnStarts')
+    on('turn.start', () => ({ turnId: 'sub-t' }))
+
+    await $.turn.start({ text: '', turnId: 'sub-t', agentId: 'sub13' } as never)
+
+    expect(wrote).toEqual([])
+  })
+
+  test('turnStarts keeps exactly the last 200 main-loop starts', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    const wrote = writesTo(on, 'turnStarts')
+    on('turn.start', () => ({ turnId: 'main' }))
+
+    for (let i = 0; i < 201; i++) {
+      await clock.advance(1)
+      await $.turn.start({ text: '', turnId: `main-${i}` } as never)
+    }
+
+    const last = wrote.at(-1)?.value as { value: number[] }
+    expect(last.value).toEqual(Array.from({ length: 200 }, (_, i) => T0 + 2 + i))
+  })
+
+  test('an async Agent launch is recorded as an agent', async ($, on) => {
+    mock.clock(on, { now: T0 })
+    const wrote = writesTo(on, 'agents')
+    on('tool.call', { tool: 'Agent' }, () => ({ result: { status: 'async_launched', agentId: 'ag14', description: 'd' } }))
+
+    await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'p' } as never)
+
+    expect(wrote.length).toBeGreaterThan(0)
+  })
+
+  test('a denied Agent call records no agent', async ($, on) => {
+    mock.clock(on, { now: T0 })
+    const wrote = writesTo(on, 'agents')
+    on('tool.call', { tool: 'Agent' }, () => ({ deny: 'not now' } as never))
+
+    const out = await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'p' } as never)
+
+    expect(out).toMatchObject({ deny: 'not now' })
+    expect(wrote).toEqual([])
+  })
+
+  test('an Agent call that completes records no agent', async ($, on) => {
+    mock.clock(on, { now: T0 })
+    const wrote = writesTo(on, 'agents')
+    on('tool.call', { tool: 'Agent' }, () => ({ result: { status: 'completed', agentId: 'ag15', description: 'd' } } as never))
+
+    await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'p' } as never)
+
+    expect(wrote).toEqual([])
   })
 })
