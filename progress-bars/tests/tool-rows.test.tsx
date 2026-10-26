@@ -58,11 +58,27 @@ describe('timing', () => {
   })
 
   test('a fault in the mod never blocks the call', async ($, on) => {
-    mock.clock(on, { now: T0 })
-    on('state.set', () => ({ value: { isSet: false, version: 0 } }))
-    on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: 'ok', stderr: '', interrupted: false } }))
+    const clock = mock.clock(on, { now: T0 })
+    // The first write (the start) lands; the second (the end, in finally,
+    // after next has returned) is refused. The harness does not show whether
+    // a refused write throws into the hook or the engine skips it, so this
+    // test cannot tell the .catch apart: it checks that the result still comes
+    // back and the tool ran once.
+    let writesSeen = 0
+    on('state.set', () => (++writesSeen === 1 ? { value: { isSet: true, version: 1 } } : { deny: 'refused' }))
+    let ran = 0
+    on('tool.call', { tool: 'Bash' }, async () => {
+      ran += 1
+      await clock.sleep(14_000)
 
-    const result = await $.tool.call({ tool: 'Bash', command: 'make test' })
+      return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+    })
+
+    const call = $.tool.call({ tool: 'Bash', command: 'make test' })
+    await clock.advance(14_000)
+    const result = await call
     expect(result.result).toMatchObject({ stdout: 'ok' })
+    expect(ran).toBe(1)
+    expect(writesSeen).toBe(2)
   })
 })
