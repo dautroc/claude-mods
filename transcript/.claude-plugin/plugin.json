@@ -1,0 +1,5 @@
+{
+  "name": "transcript",
+  "version": "0.1.0",
+  "description": "Opens this chat as Markdown in nvim in a Mado float, to read and search it"
+}

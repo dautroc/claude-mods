@@ -18,6 +18,11 @@
       "name": "prompt-style",
       "source": "./prompt-style",
       "description": "Draws your own prompts in the transcript beside an orange bar instead of on a full-width grey band"
+    },
+    {
+      "name": "transcript",
+      "source": "./transcript",
+      "description": "Opens this chat as Markdown in nvim in a Mado float, to read and search it"
     }
   ]
 }

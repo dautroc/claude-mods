@@ -27,3 +27,8 @@
 
 - On the terminal, a `UserMessage` row from `composer` (typed here, and still so on resume) or `bridge` (Remote Control) is drawn beside a one-column `claude` bar with no background, in place of the engine's full-width `userMessageBackground` band. Every other row, and every other surface, goes to `next`.
 - The engine raises no `UserMessage` for a slash command's echo (`❯ /reload-plugins`) or for a prompt a plugin submits, `asUser` or not (prompt-enhancer's Send), so those keep the band. A spike on 2026-10-26 confirmed both.
+
+## transcript
+
+- `/transcript` writes the chat as Markdown to `$TMPDIR/claude-transcripts/transcript-<first 8 of the session id>.md`, rewritten each run, then runs `mado action -s $MADO_SESSION edit-file <file> <line>`. Mado opens the session's editor (nvim unless set otherwise) on it in its enlarged float, at the newest prompt's heading. Outside a Mado pane it writes the file and says where. The command is `immediate`, so it runs mid-turn.
+- The rows come from `$.session.messages()`: at most the newest 4096, with no timestamps. After a compaction the earlier turns are one summary row: a spike on 2026-10-26 confirmed this on a resumed session. `hooks/markdown.ts` drops the rows the engine writes as user text (command output and its caveat, a skill's body, task notifications, system reminders) by their openings, and this command's own records.
