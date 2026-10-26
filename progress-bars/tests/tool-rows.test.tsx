@@ -279,4 +279,46 @@ describe('the ticker', () => {
     expect(wrote.length).toBe(after)
     await ui.unmount()
   })
+
+  // The ticker's clock writes are the observable here: the mock answers
+  // clock.every itself, so a spy on that event cannot be registered.
+  test('the ticker stops once the call has ended', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    const seen: { id?: string } = {}
+    const wrote = writes(on)
+    const clockWrites = () => wrote.filter(w => w.key === 'now').length
+    bash(on, clock, seen)
+
+    const call = $.tool.call({ tool: 'Bash', command: 'make test' })
+    await clock.advance(3_000)
+    expect(clockWrites()).toBeGreaterThan(0)
+    await clock.advance(11_000)
+    await call
+
+    await clock.advance(2_000)
+    const settled = clockWrites()
+    await clock.advance(5_000)
+    expect(clockWrites()).toBe(settled)
+  })
+
+  test('a call that throws still empties the open set, so the ticker stops', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    const wrote = writes(on)
+    const clockWrites = () => wrote.filter(w => w.key === 'now').length
+    on('tool.call', { tool: 'Bash' }, async () => {
+      await clock.sleep(14_000)
+      throw new Error('the tool failed')
+    })
+
+    const call = $.tool.call({ tool: 'Bash', command: 'make test' }).catch(() => undefined)
+    await clock.advance(3_000)
+    expect(clockWrites()).toBeGreaterThan(0)
+    await clock.advance(11_000)
+    await call
+
+    await clock.advance(2_000)
+    const settled = clockWrites()
+    await clock.advance(5_000)
+    expect(clockWrites()).toBe(settled)
+  })
 })

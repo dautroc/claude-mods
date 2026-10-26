@@ -24,6 +24,15 @@ const times = new Map<string, CallTime>()
 // An entry by its uuid, kept once found.
 const byUuid = new Map<string, SessionEntry>()
 
+// A miss is remembered this long: a late-written entry is found on the next try, but a row redrawn often doesn't grep each time.
+const MISS_TTL_MS = 10_000
+// Per session id: the time a missed file search may be asked again.
+const fileMisses = new Map<string, number>()
+// Per call id: the partial time found (if any) and the time its lookup may be asked again.
+const partials = new Map<string, { time?: CallTime; retryAt: number }>()
+// Per uuid: the time a missed lookup may be asked again.
+const uuidMisses = new Map<string, number>()
+
 // One JSON object per line. A line that does not parse is skipped: a cut last
 // line of a truncated grep output is one.
 export function parseEntries(stdout: string): SessionEntry[] {
@@ -107,18 +116,24 @@ export async function sessionFile($: Engine): Promise<string | null> {
     if (known !== undefined) {
       return known
     }
+    const now = await $.clock.now()
+    const retryAt = fileMisses.get(session)
+    if (retryAt !== undefined && now < retryAt) {
+      return null
+    }
     const configured = await $.env.get('CLAUDE_CONFIG_DIR')
     const home = configured === undefined ? await $.env.get('HOME') : undefined
     const base = configured ?? (home === undefined ? undefined : `${home}/.claude`)
     if (base === undefined) {
+      fileMisses.set(session, now + MISS_TTL_MS)
+
       return null
     }
     const found = await $.process.run(['find', `${base}/projects`, '-maxdepth', '2', '-name', `${session}.jsonl`])
-    if (found.exitCode !== 0) {
-      return null
-    }
-    const first = found.stdout.split('\n')[0]
+    const first = found.exitCode === 0 ? found.stdout.split('\n')[0] : ''
     if (!first) {
+      fileMisses.set(session, now + MISS_TTL_MS)
+
       return null
     }
     files.set(session, first)
@@ -148,18 +163,27 @@ export async function lookup($: Engine, needles: string[]): Promise<SessionEntry
   }
 }
 
-// The start and end of the given calls, as the session file has them. Only
-// the calls whose two times are both found are kept in the cache.
+// The start and end of the given calls, as the session file has them. A call
+// whose two times are both found is kept for good; one that is not is looked
+// up again after MISS_TTL_MS, and until then its partial time (if any) stands.
 export async function historyTimes($: Engine, ids: string[]): Promise<Map<string, CallTime>> {
   const out = new Map<string, CallTime>()
   const missing: string[] = []
+  const now = await $.clock.now()
   for (const id of ids) {
     const known = times.get(id)
     if (known) {
       out.set(id, known)
-    } else {
-      missing.push(id)
+      continue
     }
+    const partial = partials.get(id)
+    if (partial && now < partial.retryAt) {
+      if (partial.time) {
+        out.set(id, partial.time)
+      }
+      continue
+    }
+    missing.push(id)
   }
   if (missing.length === 0) {
     return out
@@ -169,12 +193,14 @@ export async function historyTimes($: Engine, ids: string[]): Promise<Map<string
   const found = callTimesFrom(entries)
   for (const id of missing) {
     const time = found.get(id)
-    if (time === undefined) {
-      continue
-    }
-    out.set(id, time)
-    if (time.end !== undefined) {
+    if (time?.end !== undefined) {
       times.set(id, time)
+      partials.delete(id)
+    } else {
+      partials.set(id, { time, retryAt: now + MISS_TTL_MS })
+    }
+    if (time) {
+      out.set(id, time)
     }
   }
 
@@ -187,9 +213,17 @@ export async function entryByUuid($: Engine, uuid: string): Promise<SessionEntry
   if (known) {
     return known
   }
+  const now = await $.clock.now()
+  const retryAt = uuidMisses.get(uuid)
+  if (retryAt !== undefined && now < retryAt) {
+    return undefined
+  }
   const hit = (await lookup($, [`"uuid":"${uuid}"`])).find(entry => entry.uuid === uuid)
   if (hit) {
     byUuid.set(uuid, hit)
+    uuidMisses.delete(uuid)
+  } else {
+    uuidMisses.set(uuid, now + MISS_TTL_MS)
   }
 
   return hit

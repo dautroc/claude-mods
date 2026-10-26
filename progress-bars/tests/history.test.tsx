@@ -39,8 +39,11 @@ function toolResultLine(id: string, at: number) {
 // `throws` makes every process call fail.
 type Answers = { find?: string; grepExit?: number; lines?: string | (() => string); throws?: boolean }
 
+// Returns every command the engine ran, as its argv.
 function answerProcesses(on: On, answers: Answers) {
+  const ran: string[][] = []
   on('process.run', (_, e) => {
+    ran.push([...e.argv])
     if (answers.throws) {
       throw new Error('cannot start')
     }
@@ -51,6 +54,8 @@ function answerProcesses(on: On, answers: Answers) {
 
     return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
+
+  return ran
 }
 
 function sessionOn(on: On, session: string) {
@@ -200,5 +205,58 @@ describe('a call with no recorded time', () => {
     const ui = await mountUse($, 'toolu_throw_A')
     expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
     await ui.unmount()
+  })
+})
+
+describe('a missed lookup is remembered for 10 s', () => {
+  test('a row that missed is not grepped again inside 10 s', async ($, on) => {
+    mock.clock(on, { now: T0 })
+    engine(on)
+    sessionOn(on, 'S-miss-a')
+    const ran = answerProcesses(on, { find: '/home/u/.claude/projects/p/S-miss-a.jsonl\n', lines: '' })
+
+    const first = await mountUse($, 'toolu_miss_A')
+    await first.unmount()
+    const second = await mountUse($, 'toolu_miss_A')
+    await second.unmount()
+
+    expect(ran.filter(argv => argv[0] === 'grep')).toHaveLength(1)
+  })
+
+  test('after 10 s the lookup runs again and draws the bar', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    engine(on)
+    sessionOn(on, 'S-miss-b')
+    const id = 'toolu_miss_B'
+    let written = false
+    const ran = answerProcesses(on, {
+      find: '/home/u/.claude/projects/p/S-miss-b.jsonl\n',
+      lines: () => (written ? `${toolUseLine(id, T0)}\n${toolResultLine(id, T0 + 2302)}\n` : ''),
+    })
+
+    const first = await mountUse($, id)
+    await first.unmount()
+    written = true
+    await clock.advance(10_001)
+
+    const ui = await mountUse($, id)
+    expect(ran.filter(argv => argv[0] === 'grep')).toHaveLength(2)
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(2302), color: 'success', time: '2s' })
+    await ui.unmount()
+  })
+
+  test('a find that finds nothing is asked once inside 10 s', async ($, on) => {
+    mock.clock(on, { now: T0 })
+    engine(on)
+    sessionOn(on, 'S-miss-c')
+    const ran = answerProcesses(on, { find: '' })
+
+    const first = await mountUse($, 'toolu_miss_C1')
+    await first.unmount()
+    const second = await mountUse($, 'toolu_miss_C2')
+    await second.unmount()
+
+    expect(ran.filter(argv => argv[0] === 'find')).toHaveLength(1)
+    expect(ran.filter(argv => argv[0] === 'grep')).toHaveLength(0)
   })
 })
