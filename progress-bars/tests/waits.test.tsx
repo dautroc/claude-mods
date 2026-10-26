@@ -1,10 +1,10 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On, StateWrite } from 'claude-code'
+import type { AgentStatus, On, StateWrite } from 'claude-code'
 
 import { barCells } from '../hooks/scale'
 import { waitFor } from '../hooks/waits'
-import { engine, readBar } from './helpers'
+import { answerProcesses, engine, launchAgent, readBar, sessionOn, turnLine, uid } from './helpers'
 
 const T0 = 1_800_000_000_000
 // The start of the turn whose footer waits, and the moment it ended.
@@ -55,27 +55,9 @@ describe('waitFor', () => {
 // Answers the session file lookups so the footer for `requestId` is the one
 // line given.
 function sessionWith(on: On, session: string, line: string) {
-  on('session.id', () => ({ value: session }))
-  on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
-  on('process.run', (_, e) => {
-    const isFind = e.argv[0] === 'find'
-    const stdout = isFind ? `/home/u/.claude/projects/p/${session}.jsonl\n` : line
+  sessionOn(on, session)
 
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-}
-
-// The turn_duration line of a turn that ended at `at`, with `pending` agents
-// it left running.
-function footerLine(uuid: string, at: number, pending: number) {
-  return JSON.stringify({
-    type: 'system',
-    subtype: 'turn_duration',
-    uuid,
-    timestamp: new Date(at).toISOString(),
-    durationMs: 10_000,
-    pendingBackgroundAgentCount: pending,
-  })
+  return answerProcesses(on, session, { text: `${line}\n` })
 }
 
 async function mountFooter($: Engine, requestId: string, props: Record<string, unknown>, surface: 'terminal' | 'desktop' = 'terminal') {
@@ -88,22 +70,16 @@ async function mountFooter($: Engine, requestId: string, props: Record<string, u
   } as never)
 }
 
-// Launches a background agent from the main loop, which returns at once.
-async function launchAgent($: Engine, on: On, agentId: string) {
-  on('tool.call', { tool: 'Agent' }, () => ({ result: { status: 'async_launched', agentId, description: 'd' } }))
-  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'p' } as never)
-}
-
 describe('the turn footer as a bar', () => {
   test('a footer whose turn left an agent out grows, then shows the wait', async ($, on) => {
     const clock = mock.clock(on, { now: T0 })
-    sessionWith(on, 's-wait', footerLine('u1', T0 + 10_000, 1))
+    sessionWith(on, 's-wait', turnLine(uid(1), T0 + 10_000, 1))
     on('turn.start', () => ({ turnId: 'main-2' }))
     on('turn.complete', () => ({ text: '' }))
     await launchAgent($, on, 'ag1')
     await clock.advance(40_000)
 
-    const ui = await mountFooter($, 'u1', { durationMs: 10_000 })
+    const ui = await mountFooter($, uid(1), { durationMs: 10_000 })
     expect(await readBar(ui)).toEqual({ glyphs: barCells(30_000), color: 'claude', time: '30s' })
     await clock.advance(5_000)
     await ui.redraw()
@@ -119,18 +95,18 @@ describe('the turn footer as a bar', () => {
 
   test('a plain footer shows the turn\'s time', async ($, on) => {
     mock.clock(on, { now: T0 })
-    sessionWith(on, 's-plain', footerLine('u2', T0 + 10_000, 0))
+    sessionWith(on, 's-plain', turnLine(uid(2), T0 + 10_000, 0))
 
-    const ui = await mountFooter($, 'u2', { durationMs: 14_000 })
+    const ui = await mountFooter($, uid(2), { durationMs: 14_000 })
     expect(await readBar(ui)).toEqual({ glyphs: barCells(14_000), color: 'success', time: '14s' })
     await ui.unmount()
   })
 
   test('a resumed footer shows the turn\'s time', async ($, on) => {
     mock.clock(on, { now: T0 })
-    sessionWith(on, 's-resumed', footerLine('u3', T0 + 10_000, 2))
+    sessionWith(on, 's-resumed', turnLine(uid(3), T0 + 10_000, 2))
 
-    const ui = await mountFooter($, 'u3', { durationMs: 9_000 })
+    const ui = await mountFooter($, uid(3), { durationMs: 9_000 })
     expect(await readBar(ui)).toEqual({ glyphs: barCells(9_000), color: 'success', time: '9s' })
     await ui.unmount()
   })
@@ -138,9 +114,9 @@ describe('the turn footer as a bar', () => {
   test('kept as the engine draws it, expanded', async ($, on) => {
     engine(on)
     mock.clock(on, { now: T0 })
-    sessionWith(on, 's-expanded', footerLine('u4', T0 + 10_000, 1))
+    sessionWith(on, 's-expanded', turnLine(uid(4), T0 + 10_000, 1))
 
-    const ui = await mountFooter($, 'u4', { durationMs: 10_000, isExpanded: true })
+    const ui = await mountFooter($, uid(4), { durationMs: 10_000, isExpanded: true })
     expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
     await ui.unmount()
   })
@@ -148,10 +124,106 @@ describe('the turn footer as a bar', () => {
   test('kept as the engine draws it, on a desktop surface', async ($, on) => {
     engine(on)
     mock.clock(on, { now: T0 })
-    sessionWith(on, 's-desktop', footerLine('u5', T0 + 10_000, 1))
+    sessionWith(on, 's-desktop', turnLine(uid(5), T0 + 10_000, 1))
 
-    const ui = await mountFooter($, 'u5', { durationMs: 10_000 }, 'desktop')
+    const ui = await mountFooter($, uid(5), { durationMs: 10_000 }, 'desktop')
     expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
+    await ui.unmount()
+  })
+})
+
+describe('a footer drawn before its line is written', () => {
+  test('it turns into the running wait once the line appears, with no explicit redraw', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    sessionOn(on, 's-late-line')
+    let text = ''
+    answerProcesses(on, 's-late-line', { text: () => text })
+    on('turn.start', () => ({ turnId: 'main-2' }))
+    on('turn.complete', () => ({ text: '' }))
+    await launchAgent($, on, 'ag-late')
+    await clock.advance(40_000)
+
+    const ui = await mountFooter($, uid(30), { durationMs: 10_000 })
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(10_000), color: 'success', time: '10s' })
+
+    text = `${turnLine(uid(30), T0 + 10_000, 1)}\n`
+    await clock.advance(1_500)
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(31_500), color: 'claude', time: '31s' })
+    await ui.unmount()
+  })
+
+  test('with no agent recorded, no process runs at all', async ($, on) => {
+    mock.clock(on, { now: T0 })
+    sessionOn(on, 's-no-agents')
+    const ran = answerProcesses(on, 's-no-agents', { text: `${turnLine(uid(31), T0 + 10_000, 1)}\n` })
+
+    const ui = await mountFooter($, uid(31), { durationMs: 12_000 })
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(12_000), color: 'success', time: '12s' })
+    await ui.unmount()
+
+    expect(ran).toEqual([])
+  })
+})
+
+describe('an agent whose end never arrives', () => {
+  // The ticker reads the agents once a tick; a stopped timer reads nothing.
+  function countAgentReads(on: On) {
+    const reads = { count: 0 }
+    on('state.get', (_, e, next) => {
+      if (e.key === 'agents') {
+        reads.count += 1
+      }
+
+      return next(e)
+    })
+
+    return reads
+  }
+
+  test('one listed as failed turns the footer red, and the ticker stops', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    const reads = countAgentReads(on)
+    sessionOn(on, 's-lost-failed')
+    answerProcesses(on, 's-lost-failed', { text: `${turnLine(uid(32), T0 + 10_000, 1)}\n` })
+    on('turn.start', () => ({ turnId: 'main-2' }))
+    on('turn.complete', () => ({ text: '' }))
+    const listing = { status: 'running' as AgentStatus | null }
+    await launchAgent($, on, 'ag-lost-failed', listing)
+    await clock.advance(40_000)
+
+    const ui = await mountFooter($, uid(32), { durationMs: 10_000 })
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(30_000), color: 'claude', time: '30s' })
+    listing.status = 'failed'
+    await clock.advance(1_000)
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(30_500), color: 'error', time: '30s' })
+
+    await clock.advance(1_000)
+    const settled = reads.count
+    await clock.advance(5_000)
+    expect(reads.count).toBe(settled)
+    await ui.unmount()
+  })
+
+  test('one no longer listed counts as done, and the ticker stops', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    const reads = countAgentReads(on)
+    sessionOn(on, 's-lost-dropped')
+    answerProcesses(on, 's-lost-dropped', { text: `${turnLine(uid(33), T0 + 10_000, 1)}\n` })
+    on('turn.start', () => ({ turnId: 'main-2' }))
+    on('turn.complete', () => ({ text: '' }))
+    const listing = { status: 'running' as AgentStatus | null }
+    await launchAgent($, on, 'ag-lost-dropped', listing)
+    await clock.advance(40_000)
+
+    const ui = await mountFooter($, uid(33), { durationMs: 10_000 })
+    listing.status = null
+    await clock.advance(1_000)
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(30_500), color: 'success', time: '30s' })
+
+    await clock.advance(1_000)
+    const settled = reads.count
+    await clock.advance(5_000)
+    expect(reads.count).toBe(settled)
     await ui.unmount()
   })
 })
@@ -182,7 +254,7 @@ function nextTurn($: Engine) {
 
 // A footer whose turn left `agentId` running, and the clock 30 s into the wait.
 async function waitingOn($: Engine, on: On, clock: { advance: (ms: number) => Promise<void> }, session: string, uuid: string, agentId: string) {
-  sessionWith(on, session, footerLine(uuid, T0 + 10_000, 1))
+  sessionWith(on, session, turnLine(uuid, T0 + 10_000, 1))
   on('turn.start', () => ({ turnId: 'main-next' }))
   on('turn.complete', () => ({ text: '' }))
   await launchAgent($, on, agentId)
@@ -192,33 +264,33 @@ async function waitingOn($: Engine, on: On, clock: { advance: (ms: number) => Pr
 describe('the agent outcome mapping through the footer', () => {
   test('an aborted agent makes the wait warning', async ($, on) => {
     const clock = mock.clock(on, { now: T0 })
-    await waitingOn($, on, clock, 's-killed', 'u10', 'ag10')
+    await waitingOn($, on, clock, 's-killed', uid(10), 'ag10')
     await completeAgent($, 'ag10', { isAborted: true, reason: 'aborted' })
     await nextTurn($)
 
-    const ui = await mountFooter($, 'u10', { durationMs: 10_000 })
+    const ui = await mountFooter($, uid(10), { durationMs: 10_000 })
     expect(await readBar(ui)).toEqual({ glyphs: barCells(30_000), color: 'warning', time: '30s' })
     await ui.unmount()
   })
 
   test('an agent whose turn errored makes the wait red', async ($, on) => {
     const clock = mock.clock(on, { now: T0 })
-    await waitingOn($, on, clock, 's-error', 'u11', 'ag11')
+    await waitingOn($, on, clock, 's-error', uid(11), 'ag11')
     await completeAgent($, 'ag11', { reason: 'error' })
     await nextTurn($)
 
-    const ui = await mountFooter($, 'u11', { durationMs: 10_000 })
+    const ui = await mountFooter($, uid(11), { durationMs: 10_000 })
     expect(await readBar(ui)).toEqual({ glyphs: barCells(30_000), color: 'error', time: '30s' })
     await ui.unmount()
   })
 
   test('an agent whose turn was refused makes the wait red', async ($, on) => {
     const clock = mock.clock(on, { now: T0 })
-    await waitingOn($, on, clock, 's-refusal', 'u12', 'ag12')
+    await waitingOn($, on, clock, 's-refusal', uid(12), 'ag12')
     await completeAgent($, 'ag12', { reason: 'refusal', refusal: { category: null, explanation: null } })
     await nextTurn($)
 
-    const ui = await mountFooter($, 'u12', { durationMs: 10_000 })
+    const ui = await mountFooter($, uid(12), { durationMs: 10_000 })
     expect(await readBar(ui)).toEqual({ glyphs: barCells(30_000), color: 'error', time: '30s' })
     await ui.unmount()
   })
@@ -227,9 +299,9 @@ describe('the agent outcome mapping through the footer', () => {
 describe('the turn hooks', () => {
   test('a mounted footer turns green without a redraw once its agent ends', async ($, on) => {
     const clock = mock.clock(on, { now: T0 })
-    await waitingOn($, on, clock, 's-live', 'u13', 'ag13')
+    await waitingOn($, on, clock, 's-live', uid(13), 'ag13')
 
-    const ui = await mountFooter($, 'u13', { durationMs: 10_000 })
+    const ui = await mountFooter($, uid(13), { durationMs: 10_000 })
     expect(await readBar(ui)).toEqual({ glyphs: barCells(30_000), color: 'claude', time: '30s' })
     await completeAgent($, 'ag13', {})
     await nextTurn($)
@@ -248,7 +320,7 @@ describe('the turn hooks', () => {
     expect(wrote).toEqual([])
   })
 
-  test('turnStarts keeps exactly the last 200 main-loop starts', async ($, on) => {
+  test('turnStarts keeps every main-loop start', async ($, on) => {
     const clock = mock.clock(on, { now: T0 })
     const wrote = writesTo(on, 'turnStarts')
     on('turn.start', () => ({ turnId: 'main' }))
@@ -259,7 +331,8 @@ describe('the turn hooks', () => {
     }
 
     const last = wrote.at(-1)?.value as { value: number[] }
-    expect(last.value).toEqual(Array.from({ length: 200 }, (_, i) => T0 + 2 + i))
+    expect(last.value).toHaveLength(201)
+    expect(last.value[0]).toBe(T0 + 1)
   })
 
   test('an async Agent launch is recorded as an agent', async ($, on) => {

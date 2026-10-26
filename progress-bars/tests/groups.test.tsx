@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On, StateWrite } from 'claude-code'
 
 import { barCells } from '../hooks/scale'
-import { engine, readBar } from './helpers'
+import { answerProcesses, engine, readBar, sessionOn, toolResultLine, toolUseLine } from './helpers'
 
 const T0 = 1_800_000_000_000
 
@@ -152,6 +152,75 @@ describe('a run of calls as one bar', () => {
     const ui = await mountGroup($, [row(undefined)])
 
     expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
+    await ui.unmount()
+  })
+
+  test('a not-yet-started running call is left out of the span, so the bar does not flicker back to the engine', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    engine(on)
+    writes(on)
+    const ran = answerProcesses(on, 'S-group-early')
+    sessionOn(on, 'S-group-early')
+    const { sleeps, ids } = bashTool(on, clock)
+    sleeps.a = 4_000
+
+    const a = $.tool.call({ tool: 'Bash', command: 'a' })
+    await clock.advance(4_000)
+    await a
+    await clock.advance(1_000)
+
+    const ui = await mountGroup($, [row(ids.a), row('toolu_group_not_yet', { isRunning: true })])
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(5_000), color: 'claude', time: '5s' })
+    expect(ran).toEqual([])
+    await ui.unmount()
+  })
+
+  test('a group of only not-yet-started running calls keeps the engine drawing', async ($, on) => {
+    mock.clock(on, { now: T0 })
+    engine(on)
+    const ran = answerProcesses(on, 'S-group-early-2')
+    sessionOn(on, 'S-group-early-2')
+
+    const ui = await mountGroup($, [row('toolu_group_early_1', { isRunning: true })])
+    expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
+    expect(ran).toEqual([])
+    await ui.unmount()
+  })
+
+  test('an ended call with no recorded time takes its time from the session file', async ($, on) => {
+    const clock = mock.clock(on, { now: T0 })
+    writes(on)
+    sessionOn(on, 'S-group-history')
+    answerProcesses(on, 'S-group-history', {
+      text: `${toolUseLine('toolu_group_old', 'Bash', T0 + 1_000)}\n${toolResultLine('toolu_group_old', T0 + 9_000)}\n`,
+    })
+    const { sleeps, ids } = bashTool(on, clock)
+    sleeps.a = 4_000
+
+    const a = $.tool.call({ tool: 'Bash', command: 'a' })
+    await clock.advance(4_000)
+    await a
+
+    const ui = await mountGroup($, [row(ids.a), row('toolu_group_old')])
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(9_000), color: 'success', time: '9s' })
+    await ui.unmount()
+  })
+
+  test('a group the mod never saw draws from the session file', async ($, on) => {
+    mock.clock(on, { now: T0 })
+    sessionOn(on, 'S-group-unseen')
+    answerProcesses(on, 'S-group-unseen', {
+      text: [
+        toolUseLine('toolu_unseen_a', 'Bash', T0),
+        toolUseLine('toolu_unseen_b', 'Bash', T0 + 2_000),
+        toolResultLine('toolu_unseen_b', T0 + 5_000),
+        toolResultLine('toolu_unseen_a', T0 + 7_000),
+        '',
+      ].join('\n'),
+    })
+
+    const ui = await mountGroup($, [row('toolu_unseen_a'), row('toolu_unseen_b')])
+    expect(await readBar(ui)).toEqual({ glyphs: barCells(7_000), color: 'success', time: '7s' })
     await ui.unmount()
   })
 

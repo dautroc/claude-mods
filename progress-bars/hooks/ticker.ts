@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface } from 'claude-code'
 
 import { SHAPE } from './state'
+import type { AgentRun } from '../types'
 
 type Engine = EngineInterface
 
@@ -12,8 +13,8 @@ const AGENT_WINDOW_MS = 6 * 60 * 60 * 1000
 
 // Read by the drawing so a running bar grows; this module writes it.
 const now = atom({ plugin: 'progress-bars', key: 'now' } as const, 0)
-// The background agents; nothing writes them yet.
-const agents = atom({ plugin: 'progress-bars', key: 'agents' } as const, [], { shape: SHAPE })
+// The background agents the register hooks record.
+const agents = atom({ plugin: 'progress-bars', key: 'agents' } as const, [] as AgentRun[], { shape: SHAPE })
 
 // The main-loop calls that have started and not yet ended.
 const open = new Set<string>()
@@ -59,7 +60,42 @@ export async function tick($: Engine): Promise<void> {
 }
 
 async function agentOpen($: Engine, at: number): Promise<boolean> {
-  const runs = await read($, agents)
+  let runs = await read($, agents)
+  if (runs.some(run => run.end === undefined)) {
+    runs = await settleLost($, runs, at)
+  }
 
   return runs.some(run => run.end === undefined && run.start > at - AGENT_WINDOW_MS)
+}
+
+// An agent whose end never arrived (its turn.complete was missed, say) is read
+// off $.agent.list(): listed as completed, failed or killed, it ended with that
+// outcome; no longer listed, it ended and draws as done. Returns the runs as they stand.
+async function settleLost($: Engine, runs: AgentRun[], at: number): Promise<AgentRun[]> {
+  try {
+    const listed = await $.agent.list()
+    const settled = new Map<string, Pick<AgentRun, 'end' | 'outcome'>>()
+    for (const run of runs) {
+      if (run.end !== undefined) {
+        continue
+      }
+      const info = listed.find(agent => agent.id === run.id)
+      if (info === undefined) {
+        settled.set(run.id, { end: at })
+      } else if (info.status === 'completed' || info.status === 'failed' || info.status === 'killed') {
+        settled.set(run.id, { end: at, outcome: info.status })
+      }
+    }
+    if (settled.size === 0) {
+      return runs
+    }
+    const apply = (all: readonly AgentRun[]) =>
+      all.map(run => (run.end === undefined && settled.has(run.id) ? { ...run, ...settled.get(run.id) } : run))
+    await update($, agents, all => apply(all))
+
+    return apply(runs)
+  } catch {
+    // The ticker goes on as before.
+    return runs
+  }
 }

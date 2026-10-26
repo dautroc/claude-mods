@@ -4,110 +4,121 @@ import type { CallTime } from '../types'
 
 type Engine = EngineInterface
 
-// One line of the session file. Only the fields the mod reads are typed.
-export type SessionEntry = {
-  type?: string
-  subtype?: string
-  uuid?: string
-  timestamp?: string
-  pendingBackgroundAgentCount?: number
-  origin?: { kind?: string; handback?: boolean }
-  message?: { content?: unknown }
+// What the mod knows of one session file: every tool call's times and name,
+// every turn_duration line, and the uuids of the hand-back entries.
+export type SessionIndex = {
+  calls: Map<string, { start?: number; end?: number; name?: string }>
+  // A turn_duration entry by its uuid: its timestamp and the background agents it left running (0 when absent).
+  turns: Map<string, { at: number; pending: number }>
+  handbacks: Set<string>
 }
 
-type Block = { type?: string; id?: string; name?: string; tool_use_id?: string }
+// One pass over the file finds everything the index holds. Session files reach well over 100 MB,
+// so this is a single regex with -o: its cost does not grow with what it looks for.
+export const INDEX_PATTERN =
+  '"id":"toolu_[A-Za-z0-9_]+","name":"[^"]+"|"tool_use_id":"toolu_[A-Za-z0-9_]+"|"uuid":"[0-9a-f-]{36}","timestamp":"[^"]+"|"subtype":"turn_duration"[^}]*|"handback":true'
+
+// A scan does not start within this long of the last one's start.
+export const REFRESH_MS = 1_000
+// A missed file search is remembered this long.
+const FILE_MISS_MS = 10_000
 
 // The session file's id to its path, kept only once found.
 const files = new Map<string, string>()
-// A call's times, kept once both are found.
-const times = new Map<string, CallTime>()
-// An entry by its uuid, kept once found.
-const byUuid = new Map<string, SessionEntry>()
-
-// A miss is remembered this long: a late-written entry is found on the next try, but a row redrawn often doesn't grep each time.
-const MISS_TTL_MS = 10_000
 // Per session id: the time a missed file search may be asked again.
 const fileMisses = new Map<string, number>()
-// Per call id: the partial time found (if any) and the time its lookup may be asked again.
-const partials = new Map<string, { time?: CallTime; retryAt: number }>()
-// Per uuid: the time a missed lookup may be asked again.
-const uuidMisses = new Map<string, number>()
-// A tool call's name, kept once found, and the time a missed lookup may be asked again.
-const names = new Map<string, string>()
-const nameMisses = new Map<string, number>()
 
-// One JSON object per line. A line that does not parse is skipped: a cut last
-// line of a truncated grep output is one.
-export function parseEntries(stdout: string): SessionEntry[] {
-  const entries: SessionEntry[] = []
-  for (const line of stdout.split('\n')) {
-    if (line.trim() === '') {
-      continue
-    }
-    try {
-      const value: unknown = JSON.parse(line)
-      if (value && typeof value === 'object') {
-        entries.push(value as SessionEntry)
-      }
-    } catch {
-      // A line cut short by a truncated output: skipped.
-    }
-  }
+type Scan = {
+  index: SessionIndex
+  // Absolute byte offset the next scan starts from; undefined before the first scan reads anything.
+  offset?: number
+  // When the last scan started.
+  startedAt?: number
+  running?: Promise<void>
+}
+// One scan state per session id.
+const scans = new Map<string, Scan>()
 
-  return entries
+function emptyIndex(): SessionIndex {
+  return { calls: new Map(), turns: new Map(), handbacks: new Set() }
 }
 
-function blocksOf(entry: SessionEntry): Block[] {
-  const content = entry.message?.content
-  if (!Array.isArray(content)) {
-    return []
-  }
+type Match = { line: number; byte: number; text: string }
 
-  return content.filter((block): block is Block => block !== null && typeof block === 'object')
-}
-
-// The start of every tool call in these entries, and the end of every call
-// with a result. A call without a start is left out.
-export function callTimesFrom(entries: SessionEntry[]): Map<string, CallTime> {
-  const starts = new Map<string, number>()
-  const ends = new Map<string, number>()
-  for (const entry of entries) {
-    const at = entry.timestamp === undefined ? NaN : Date.parse(entry.timestamp)
-    if (Number.isNaN(at)) {
-      continue
+function matchesOf(stdout: string): Match[] {
+  const out: Match[] = []
+  for (const row of stdout.split('\n')) {
+    const m = /^(\d+):(\d+):(.*)$/s.exec(row)
+    if (m) {
+      out.push({ line: Number(m[1]), byte: Number(m[2]), text: m[3] as string })
     }
-    for (const block of blocksOf(entry)) {
-      if (entry.type === 'assistant' && block.type === 'tool_use' && typeof block.id === 'string') {
-        starts.set(block.id, at)
-      } else if (entry.type === 'user' && block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-        ends.set(block.tool_use_id, at)
-      }
-    }
-  }
-
-  const out = new Map<string, CallTime>()
-  for (const [id, start] of starts) {
-    const end = ends.get(id)
-    out.set(id, end === undefined ? { start } : { start, end })
   }
 
   return out
 }
 
-// The name of the tool a call ran, from its tool_use block.
-export function toolNameFrom(entries: SessionEntry[], id: string): string | undefined {
-  for (const entry of entries) {
-    if (entry.type !== 'assistant') {
+const STAMP = /^"uuid":"([0-9a-f-]{36})","timestamp":"([^"]+)"$/
+
+// Reads `grep -n -b -o` output (`<line>:<byte>:<match>`) into the index. `base` is the file offset the
+// output's bytes are counted from. Returns the absolute offset of the last uuid/timestamp match, where the
+// next scan starts; undefined when there was none. A call or entry already in the index keeps its first values.
+export function parseIndex(stdout: string, base: number, into: SessionIndex): number | undefined {
+  let last: number | undefined
+  const groups = new Map<number, Match[]>()
+  for (const match of matchesOf(stdout)) {
+    const group = groups.get(match.line)
+    if (group) {
+      group.push(match)
+    } else {
+      groups.set(match.line, [match])
+    }
+  }
+
+  for (const group of groups.values()) {
+    const turn = group.find(match => match.text.startsWith('"subtype":"turn_duration"'))
+    if (turn) {
+      const at = /"timestamp":"([^"]+)"/.exec(turn.text)?.[1]
+      const uuid = /"uuid":"([0-9a-f-]{36})"/.exec(turn.text)?.[1]
+      const pending = Number(/"pendingBackgroundAgentCount":(\d+)/.exec(turn.text)?.[1] ?? 0)
+      const ms = at === undefined ? NaN : Date.parse(at)
+      if (uuid !== undefined && !Number.isNaN(ms) && !into.turns.has(uuid)) {
+        into.turns.set(uuid, { at: ms, pending })
+      }
       continue
     }
-    for (const block of blocksOf(entry)) {
-      if (block.type === 'tool_use' && block.id === id && typeof block.name === 'string') {
-        return block.name
+
+    let uuid: string | undefined
+    let at = NaN
+    for (const match of group) {
+      const stamp = STAMP.exec(match.text)
+      if (stamp) {
+        uuid = stamp[1]
+        at = Date.parse(stamp[2] as string)
+        last = base + match.byte
+      }
+    }
+    if (uuid === undefined || Number.isNaN(at)) {
+      continue
+    }
+    for (const match of group) {
+      const started = /^"id":"(toolu_[A-Za-z0-9_]+)","name":"([^"]+)"$/.exec(match.text)
+      const ended = /^"tool_use_id":"(toolu_[A-Za-z0-9_]+)"$/.exec(match.text)
+      if (started) {
+        const call = into.calls.get(started[1] as string) ?? {}
+        call.start ??= at
+        call.name ??= started[2]
+        into.calls.set(started[1] as string, call)
+      } else if (ended) {
+        const call = into.calls.get(ended[1] as string) ?? {}
+        call.end ??= at
+        into.calls.set(ended[1] as string, call)
+      } else if (match.text === '"handback":true') {
+        into.handbacks.add(uuid)
       }
     }
   }
 
-  return undefined
+  return last
 }
 
 // The session file's path: found under the config directory's projects, which
@@ -128,14 +139,14 @@ export async function sessionFile($: Engine): Promise<string | null> {
     const home = configured === undefined ? await $.env.get('HOME') : undefined
     const base = configured ?? (home === undefined ? undefined : `${home}/.claude`)
     if (base === undefined) {
-      fileMisses.set(session, now + MISS_TTL_MS)
+      fileMisses.set(session, now + FILE_MISS_MS)
 
       return null
     }
     const found = await $.process.run(['find', `${base}/projects`, '-maxdepth', '2', '-name', `${session}.jsonl`])
     const first = found.exitCode === 0 ? found.stdout.split('\n')[0] : ''
     if (!first) {
-      fileMisses.set(session, now + MISS_TTL_MS)
+      fileMisses.set(session, now + FILE_MISS_MS)
 
       return null
     }
@@ -147,109 +158,151 @@ export async function sessionFile($: Engine): Promise<string | null> {
   }
 }
 
-// The session entries holding any of the needles. Nothing when the file is
-// missing or grep fails.
-export async function lookup($: Engine, needles: string[]): Promise<SessionEntry[]> {
+
+// The first scan reads the whole file: ripgrep when it runs, else grep.
+async function firstScan($: Engine, file: string) {
+  try {
+    const out = await $.process.run(['rg', '--no-config', '-a', '-n', '-b', '-o', '-e', INDEX_PATTERN, file])
+    if (out.exitCode === 0 || out.exitCode === 1) {
+      return out
+    }
+  } catch {
+    // No ripgrep here: grep reads it instead.
+  }
+
+  return $.process.run(['grep', '-a', '-n', '-b', '-o', '-E', INDEX_PATTERN, file])
+}
+
+// Later scans read from the stored offset on.
+function laterScan($: Engine, file: string, offset: number) {
+  return $.process.run(['sh', '-c', 'tail -c +"$1" "$2" | grep -a -n -b -o -E "$3"', 'sh', String(offset + 1), file, INDEX_PATTERN])
+}
+
+async function scanOnce($: Engine, state: Scan): Promise<void> {
   try {
     const file = await sessionFile($)
     if (file === null) {
-      return []
+      return
     }
-    const out = await $.process.run(['grep', '-F', ...needles.flatMap(n => ['-e', n]), file])
-    if (out.exitCode !== 0) {
-      return []
+    const base = state.offset ?? 0
+    const out = state.offset === undefined ? await firstScan($, file) : await laterScan($, file, state.offset)
+    if (out.exitCode !== 0 && out.exitCode !== 1) {
+      return
     }
-
-    return parseEntries(out.stdout)
+    // A truncated output may end mid-match: its last line is dropped.
+    const whole = out.stdout.endsWith('\n') ? out.stdout.slice(0, -1) : out.stdout
+    const stdout = out.isStdoutTruncated ? whole.slice(0, Math.max(0, whole.lastIndexOf('\n'))) : out.stdout
+    const next = parseIndex(stdout, base, state.index)
+    if (next !== undefined) {
+      state.offset = next
+    }
   } catch {
-    return []
+    // A failed scan leaves the index and offset as they were.
   }
 }
 
-// The start and end of the given calls, as the session file has them. A call
-// whose two times are both found is kept for good; one that is not is looked
-// up again after MISS_TTL_MS, and until then its partial time (if any) stands.
-export async function historyTimes($: Engine, ids: string[]): Promise<Map<string, CallTime>> {
-  const out = new Map<string, CallTime>()
-  const missing: string[] = []
-  const now = await $.clock.now()
-  for (const id of ids) {
-    const known = times.get(id)
-    if (known) {
-      out.set(id, known)
-      continue
-    }
-    const partial = partials.get(id)
-    if (partial && now < partial.retryAt) {
-      if (partial.time) {
-        out.set(id, partial.time)
-      }
-      continue
-    }
-    missing.push(id)
-  }
-  if (missing.length === 0) {
-    return out
+async function stateOf($: Engine): Promise<Scan> {
+  const session = await $.session.id()
+  let state = scans.get(session)
+  if (!state) {
+    state = { index: emptyIndex() }
+    scans.set(session, state)
   }
 
-  const entries = await lookup($, missing.flatMap(id => [`"id":"${id}"`, `"tool_use_id":"${id}"`]))
-  const found = callTimesFrom(entries)
-  for (const id of missing) {
-    const time = found.get(id)
-    if (time?.end !== undefined) {
-      times.set(id, time)
-      partials.delete(id)
-    } else {
-      partials.set(id, { time, retryAt: now + MISS_TTL_MS })
+  return state
+}
+
+// Reads what the session file gained since the last scan. One scan runs at a time and callers
+// that arrive meanwhile share it; none starts within REFRESH_MS of the last one's start.
+async function refresh($: Engine): Promise<Scan> {
+  const state = await stateOf($)
+  const now = await $.clock.now()
+  // No await from here to the assignment: two callers cannot both start a scan.
+  if (state.running) {
+    await state.running
+
+    return state
+  }
+  if (state.startedAt === undefined || now >= state.startedAt + REFRESH_MS) {
+    state.startedAt = now
+    state.running = scanOnce($, state).finally(() => {
+      state.running = undefined
+    })
+    await state.running
+  }
+
+  return state
+}
+
+// Starts the first scan without waiting for it, so rows drawn after a resume find the index ready.
+export async function warm($: Engine): Promise<void> {
+  try {
+    await refresh($)
+  } catch {
+    // Warming is an aid: a fault leaves the lookups to scan on demand.
+  }
+}
+
+// The start and end of the given calls. Runs one refresh first if any lacks its end; times found
+// partly are returned as found.
+export async function callTimes($: Engine, ids: string[]): Promise<Map<string, CallTime>> {
+  const out = new Map<string, CallTime>()
+  try {
+    let state = await stateOf($)
+    if (ids.some(id => state.index.calls.get(id)?.end === undefined)) {
+      state = await refresh($)
     }
-    if (time) {
-      out.set(id, time)
+    for (const id of ids) {
+      const call = state.index.calls.get(id)
+      if (call?.start !== undefined) {
+        out.set(id, call.end === undefined ? { start: call.start } : { start: call.start, end: call.end })
+      }
     }
+  } catch {
+    // A failed lookup answers what it has.
   }
 
   return out
 }
 
-// The entry whose uuid is given, or undefined when none is found.
-export async function entryByUuid($: Engine, uuid: string): Promise<SessionEntry | undefined> {
-  const known = byUuid.get(uuid)
-  if (known) {
-    return known
-  }
-  const now = await $.clock.now()
-  const retryAt = uuidMisses.get(uuid)
-  if (retryAt !== undefined && now < retryAt) {
+// A turn_duration entry by its uuid, or undefined when the file has none.
+export async function turnEntry($: Engine, uuid: string): Promise<{ at: number; pending: number } | undefined> {
+  try {
+    let state = await stateOf($)
+    if (!state.index.turns.has(uuid)) {
+      state = await refresh($)
+    }
+
+    return state.index.turns.get(uuid)
+  } catch {
     return undefined
   }
-  const hit = (await lookup($, [`"uuid":"${uuid}"`])).find(entry => entry.uuid === uuid)
-  if (hit) {
-    byUuid.set(uuid, hit)
-    uuidMisses.delete(uuid)
-  } else {
-    uuidMisses.set(uuid, now + MISS_TTL_MS)
-  }
-
-  return hit
 }
 
-// The name of the tool a call ran, by its id, or undefined when none is found.
-export async function toolNameOf($: Engine, id: string): Promise<string | undefined> {
-  const known = names.get(id)
-  if (known !== undefined) {
-    return known
+// Whether the entry with this uuid is an agent's hand-back report.
+export async function isHandback($: Engine, uuid: string): Promise<boolean> {
+  try {
+    let state = await stateOf($)
+    if (!state.index.handbacks.has(uuid)) {
+      state = await refresh($)
+    }
+
+    return state.index.handbacks.has(uuid)
+  } catch {
+    return false
   }
-  const now = await $.clock.now()
-  const retryAt = nameMisses.get(id)
-  if (retryAt !== undefined && now < retryAt) {
+}
+
+// The name of the tool a call ran, by its id, or undefined when the file has none.
+export async function toolNameOf($: Engine, id: string): Promise<string | undefined> {
+  try {
+    let state = await stateOf($)
+    if (state.index.calls.get(id)?.name === undefined) {
+      state = await refresh($)
+    }
+
+    return state.index.calls.get(id)?.name
+  } catch {
     return undefined
   }
-  const name = toolNameFrom(await lookup($, [`"id":"${id}"`]), id)
-  if (name === undefined) {
-    nameMisses.set(id, now + MISS_TTL_MS)
-  } else {
-    names.set(id, name)
-    nameMisses.delete(id)
-  }
-
-  return name
 }

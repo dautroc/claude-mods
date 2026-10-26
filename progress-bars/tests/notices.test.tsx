@@ -1,74 +1,12 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On } from 'claude-code'
 
-import { engine } from './helpers'
+import { answerProcesses, engine, launchAgent, promptLine, sessionOn, toolUseLine, uid } from './helpers'
 
 const T0 = 1_800_000_000_000
 
-function iso(ms: number) {
-  return new Date(ms).toISOString()
-}
-
-// One line of a session file: the assistant's call of a tool named `name`.
-function toolUseLine(id: string, name: string, at: number) {
-  return JSON.stringify({
-    parentUuid: 'p',
-    isSidechain: false,
-    message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input: {} }] },
-    type: 'assistant',
-    uuid: `u-${id}`,
-    timestamp: iso(at),
-  })
-}
-
-// One line of a session file: a user prompt saved with its origin.
-function promptLine(uuid: string, origin: Record<string, unknown>) {
-  return JSON.stringify({
-    type: 'user',
-    uuid,
-    origin,
-    message: { role: 'user', content: 'hi' },
-    timestamp: iso(T0),
-  })
-}
-
-// Answers `find` with the session file, and every `grep` with `lines`. Returns
-// the commands the engine ran, as their argv.
-function answerProcesses(on: On, session: string, lines: string) {
-  const ran: string[][] = []
-  on('process.run', (_, e) => {
-    ran.push([...e.argv])
-    const isFind = e.argv[0] === 'find'
-    const stdout = isFind ? `/home/u/.claude/projects/p/${session}.jsonl\n` : lines
-
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-
-  return ran
-}
-
-function sessionOn(on: On, session: string) {
-  on('session.id', () => ({ value: session }))
-  on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
-}
-
-// Launches a background agent from the main loop, and returns the tool call
-// that started it.
-async function launchAgent($: Engine, on: On, agentId: string) {
-  let toolUseId = ''
-  on('tool.call', { tool: 'Agent' }, (_, e) => {
-    toolUseId = e.tool_use_id
-
-    return { result: { status: 'async_launched', agentId, description: 'd' } }
-  })
-  await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'p' } as never)
-
-  return toolUseId
-}
-
 // A task-notification row for a background task.
-function notice(task: { id?: string; toolUseId?: string }) {
+function notice(task: { id?: string; toolUseId?: string; type?: string }) {
   return { text: 'done', origin: { kind: 'task-notification' }, isExpanded: false, task: { ...task, status: 'completed' } }
 }
 
@@ -92,7 +30,7 @@ describe("an agent's finished notice is hidden", () => {
     mock.clock(on, { now: T0 })
     engine(on)
     sessionOn(on, 'S-notice-state')
-    answerProcesses(on, 'S-notice-state', '')
+    answerProcesses(on, 'S-notice-state')
     const toolUseId = await launchAgent($, on, 'ag-notice-state')
 
     const ui = await mountRow($, 'notice-state-row', notice({ id: 'ag-notice-state', toolUseId }))
@@ -104,7 +42,7 @@ describe("an agent's finished notice is hidden", () => {
     mock.clock(on, { now: T0 })
     engine(on)
     sessionOn(on, 'S-notice-file')
-    answerProcesses(on, 'S-notice-file', `${toolUseLine('toolu_notice_file', 'Agent', T0)}\n`)
+    answerProcesses(on, 'S-notice-file', { text: `${toolUseLine('toolu_notice_file', 'Agent', T0)}\n` })
 
     const ui = await mountRow($, 'notice-file-row', notice({ id: 'ag-notice-file', toolUseId: 'toolu_notice_file' }))
     expect(await ui.findAll({ type: 'Text' })).toEqual([])
@@ -117,9 +55,9 @@ describe("an agent's hand-back report is hidden", () => {
     mock.clock(on, { now: T0 })
     engine(on)
     sessionOn(on, 'S-handback')
-    answerProcesses(on, 'S-handback', `${promptLine('peer-handback-1', { kind: 'peer', handback: true })}\n`)
+    answerProcesses(on, 'S-handback', { text: `${promptLine(uid(1), { kind: 'peer', handback: true })}\n` })
 
-    const ui = await mountRow($, 'peer-handback-1', peer('general-purpose'))
+    const ui = await mountRow($, uid(1), peer('general-purpose'))
     expect(await ui.findAll({ type: 'Text' })).toEqual([])
     await ui.unmount()
   })
@@ -130,9 +68,20 @@ describe('kept as the engine draws them', () => {
     mock.clock(on, { now: T0 })
     engine(on)
     sessionOn(on, 'S-shell')
-    answerProcesses(on, 'S-shell', `${toolUseLine('toolu_shell_1', 'Bash', T0)}\n`)
+    answerProcesses(on, 'S-shell', { text: `${toolUseLine('toolu_shell_1', 'Bash', T0)}\n` })
 
     const ui = await mountRow($, 'shell-row-1', notice({ id: 'bsh-1', toolUseId: 'toolu_shell_1' }))
+    expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
+    await ui.unmount()
+  })
+
+  test("a remote agent's notice, whose launching call names Agent", async ($, on) => {
+    mock.clock(on, { now: T0 })
+    engine(on)
+    sessionOn(on, 'S-remote')
+    answerProcesses(on, 'S-remote', { text: `${toolUseLine('toolu_remote_1', 'Agent', T0)}\n` })
+
+    const ui = await mountRow($, 'remote-row-1', notice({ id: 'rem-1', toolUseId: 'toolu_remote_1', type: 'remote_agent' }))
     expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
     await ui.unmount()
   })
@@ -141,9 +90,9 @@ describe('kept as the engine draws them', () => {
     mock.clock(on, { now: T0 })
     engine(on)
     sessionOn(on, 'S-other-session')
-    answerProcesses(on, 'S-other-session', `${promptLine('peer-other-1', { kind: 'peer' })}\n`)
+    answerProcesses(on, 'S-other-session', { text: `${promptLine(uid(2), { kind: 'peer' })}\n` })
 
-    const ui = await mountRow($, 'peer-other-1', peer('other-session'))
+    const ui = await mountRow($, uid(2), peer('other-session'))
     expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
     await ui.unmount()
   })
@@ -152,7 +101,7 @@ describe('kept as the engine draws them', () => {
     test(`a ${origin.kind} row passes through untouched`, async ($, on) => {
       mock.clock(on, { now: T0 })
       engine(on)
-      const ran = answerProcesses(on, `S-origin-${origin.kind}`, '')
+      const ran = answerProcesses(on, `S-origin-${origin.kind}`)
       sessionOn(on, `S-origin-${origin.kind}`)
 
       const ui = await mountRow($, `origin-${origin.kind}-row`, { origin })
@@ -166,9 +115,9 @@ describe('kept as the engine draws them', () => {
     mock.clock(on, { now: T0 })
     engine(on)
     sessionOn(on, 'S-expanded-peer')
-    answerProcesses(on, 'S-expanded-peer', `${promptLine('peer-expanded-1', { kind: 'peer', handback: true })}\n`)
+    answerProcesses(on, 'S-expanded-peer', { text: `${promptLine(uid(3), { kind: 'peer', handback: true })}\n` })
 
-    const ui = await mountRow($, 'peer-expanded-1', { ...peer('general-purpose'), isExpanded: true })
+    const ui = await mountRow($, uid(3), { ...peer('general-purpose'), isExpanded: true })
     expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
     await ui.unmount()
   })
@@ -177,20 +126,20 @@ describe('kept as the engine draws them', () => {
     mock.clock(on, { now: T0 })
     engine(on)
     sessionOn(on, 'S-desktop-peer')
-    answerProcesses(on, 'S-desktop-peer', `${promptLine('peer-desktop-1', { kind: 'peer', handback: true })}\n`)
+    answerProcesses(on, 'S-desktop-peer', { text: `${promptLine(uid(4), { kind: 'peer', handback: true })}\n` })
 
-    const ui = await mountRow($, 'peer-desktop-1', peer('general-purpose'), 'desktop')
+    const ui = await mountRow($, uid(4), peer('general-purpose'), 'desktop')
     expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
     await ui.unmount()
   })
 })
 
 describe('the notice lookup is remembered', () => {
-  test("two renders of a background shell's notice inside 10 s run grep once", async ($, on) => {
+  test("two renders of a background shell's notice run one scan", async ($, on) => {
     mock.clock(on, { now: T0 })
     engine(on)
     sessionOn(on, 'S-shell-cache')
-    const ran = answerProcesses(on, 'S-shell-cache', `${toolUseLine('toolu_shell_cache', 'Bash', T0)}\n`)
+    const ran = answerProcesses(on, 'S-shell-cache', { text: `${toolUseLine('toolu_shell_cache', 'Bash', T0)}\n` })
     const props = notice({ id: 'bsh-cache', toolUseId: 'toolu_shell_cache' })
 
     const first = await mountRow($, 'shell-cache-row', props)
@@ -199,6 +148,6 @@ describe('the notice lookup is remembered', () => {
     expect((await second.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
     await second.unmount()
 
-    expect(ran.filter(argv => argv[0] === 'grep')).toHaveLength(1)
+    expect(ran.filter(argv => argv[0] === 'rg')).toHaveLength(1)
   })
 })

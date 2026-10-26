@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderInput, ToolGroupCall } from 'claude-code'
 
 import { type BarTone, drawBar, drawNothing, toneOf } from './bar'
-import { entryByUuid, historyTimes, toolNameOf } from './history'
+import { callTimes, isHandback, toolNameOf, turnEntry, warm } from './history'
 import { SHAPE } from './state'
 import { ensureTicking, markEnded, markStarted } from './ticker'
 import { waitFor } from './waits'
@@ -27,52 +27,31 @@ export const REFUSED_PREFIX = "The user doesn't want to proceed with this tool u
 
 // Read by the drawing so a running call's bar grows; the ticker writes it.
 const now = atom({ plugin: 'progress-bars', key: 'now' } as const, 0)
-// The background agents, and the start of each main-loop turn (the last 200).
+// The background agents, and the start of each main-loop turn.
 const agents = atom({ plugin: 'progress-bars', key: 'agents' } as const, [] as AgentRun[], { shape: SHAPE })
 const turnStarts = atom({ plugin: 'progress-bars', key: 'turnStarts' } as const, [] as number[], { shape: SHAPE })
 
-type Known = { start?: number; end?: number }
-
-// The start and end of each row's call: from the state, and for what the state
-// lacks, from the session file. A running row needs only its start.
-async function knownTimes($: Engine, rows: readonly { tool_use_id: string; isRunning: boolean }[]): Promise<Map<string, Known>> {
-  const known = new Map<string, Known>()
-  const lacking: string[] = []
-  for (const row of rows) {
-    const call = atom({ plugin: 'progress-bars', key: 'calls', id: row.tool_use_id } as const, null, { shape: SHAPE })
-    const time = await read($, call)
-    known.set(row.tool_use_id, { start: time?.start, end: time?.end })
-    if (time?.start === undefined || (!row.isRunning && time.end === undefined)) {
-      lacking.push(row.tool_use_id)
-    }
-  }
-  if (lacking.length > 0) {
-    const history = await historyTimes($, lacking)
-    for (const id of lacking) {
-      const found = history.get(id)
-      const mine = known.get(id) ?? {}
-      mine.start ??= found?.start
-      mine.end ??= found?.end
-      known.set(id, mine)
-    }
-  }
-
-  return known
-}
-
 // How long a call has taken, or undefined when the mod can't establish it.
-// A running call is measured up to now.
+// A running call is measured up to now, and one that has no start in the state
+// keeps the engine's drawing: its tool.call hook has not run yet.
 async function toolUseMs($: Engine, id: string, isRunning: boolean): Promise<number | undefined> {
-  const { start, end } = (await knownTimes($, [{ tool_use_id: id, isRunning }])).get(id) ?? {}
-  if (start === undefined) {
-    return undefined
-  }
+  const time = await read($, atom({ plugin: 'progress-bars', key: 'calls', id } as const, null, { shape: SHAPE }))
+  let { start, end } = time ?? {}
   if (isRunning) {
+    if (start === undefined) {
+      return undefined
+    }
+    // Subscribes the row to the ticker, so the bar grows.
     await read($, now)
 
     return (await $.clock.now()) - start
   }
-  if (end === undefined) {
+  if (start === undefined || end === undefined) {
+    const found = (await callTimes($, [id])).get(id)
+    start ??= found?.start
+    end ??= found?.end
+  }
+  if (start === undefined || end === undefined) {
     return undefined
   }
 
@@ -80,7 +59,8 @@ async function toolUseMs($: Engine, id: string, isRunning: boolean): Promise<num
 }
 
 // The span of a run of calls: from the earliest start to the latest end, or
-// to now while any call runs. Undefined when the mod can't establish it.
+// to now while any call runs. A running call with no start yet is left out of
+// it. Undefined when the mod can't establish it.
 async function groupSpan($: Engine, calls: readonly ToolGroupCall[]): Promise<{ ms: number; isRunning: boolean } | undefined> {
   if (calls.length === 0) {
     return undefined
@@ -92,26 +72,46 @@ async function groupSpan($: Engine, calls: readonly ToolGroupCall[]): Promise<{ 
     }
     rows.push({ tool_use_id: row.tool_use_id, isRunning: row.isRunning })
   }
-  const known = await knownTimes($, rows)
+  const states = await Promise.all(rows.map(row =>
+      read($, atom({ plugin: 'progress-bars', key: 'calls', id: row.tool_use_id } as const, null, { shape: SHAPE })),
+    ),)
+  const times = rows.map((row, i) => ({ start: states[i]?.start, end: states[i]?.end }))
+
+  // A call that has ended takes what the state lacks of it from the session file.
+  const lacking = rows.filter((row, i) => !row.isRunning && (times[i]?.start === undefined || times[i]?.end === undefined))
+  if (lacking.length > 0) {
+    const history = await callTimes($, lacking.map(row => row.tool_use_id))
+    rows.forEach((row, i) => {
+      const found = history.get(row.tool_use_id)
+      const mine = times[i]
+      if (!row.isRunning && mine && found) {
+        mine.start ??= found.start
+        mine.end ??= found.end
+      }
+    })
+  }
 
   let start = Infinity
   let end = -Infinity
   let isRunning = false
-  for (const row of rows) {
-    const time = known.get(row.tool_use_id)
-    if (time?.start === undefined) {
-      return undefined
-    }
-    start = Math.min(start, time.start)
+  for (const [i, row] of rows.entries()) {
+    const time = times[i]
     if (row.isRunning) {
       isRunning = true
-    } else if (time.end === undefined) {
+    } else if (time?.end === undefined) {
       return undefined
     } else {
       end = Math.max(end, time.end)
     }
+    if (time?.start !== undefined) {
+      start = Math.min(start, time.start)
+    }
+  }
+  if (start === Infinity) {
+    return undefined
   }
   if (isRunning) {
+    // Subscribes the row to the ticker, so the bar grows.
     await read($, now)
     end = await $.clock.now()
   }
@@ -161,7 +161,11 @@ async function barFor(
 
 // Whether a background agent's finished notice is one this session launched:
 // the state knows the agent, or the session file says its launching call was Agent.
-async function isAgentNotice($: Engine, task: { id?: string; toolUseId?: string }): Promise<boolean> {
+async function isAgentNotice($: Engine, task: { id?: string; toolUseId?: string; type?: string }): Promise<boolean> {
+  // A remote agent or an artifact watch is not one of this session's background agents.
+  if (task.type !== undefined) {
+    return false
+  }
   const runs = await read($, agents)
   if (runs.some(run => run.id === task.id || (task.toolUseId !== undefined && run.toolUseId === task.toolUseId))) {
     return true
@@ -171,11 +175,6 @@ async function isAgentNotice($: Engine, task: { id?: string; toolUseId?: string 
   }
 
   return (await toolNameOf($, task.toolUseId)) === 'Agent'
-}
-
-// Whether a peer row is an agent's hand-back report, which the saved entry marks.
-async function isHandback($: Engine, uuid: string): Promise<boolean> {
-  return (await entryByUuid($, uuid))?.origin?.handback === true
 }
 
 export const register: Register = on => {
@@ -217,7 +216,7 @@ export const register: Register = on => {
       return next(e)
     }
     const at = await $.clock.now()
-    await update($, turnStarts, starts => [...starts, at].slice(-200))
+    await update($, turnStarts, starts => [...starts, at])
 
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -243,6 +242,7 @@ export const register: Register = on => {
   // needs the ticker running.
   on('session.start', ($, e, next) => {
     ensureTicking($)
+    void warm($)
 
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -270,14 +270,27 @@ export const register: Register = on => {
       return next(e)
     }
     const runs = await read($, agents)
+    // No agent was ever out: the footer is its own time, and the file is not read.
+    if (runs.length === 0) {
+      return drawBar($, e, e.props.durationMs, 'done')
+    }
     const starts = await read($, turnStarts)
-    const entry = await entryByUuid($, e.requestId)
-    const turnEnd = entry?.timestamp === undefined ? NaN : Date.parse(entry.timestamp)
-    if ((entry?.pendingBackgroundAgentCount ?? 0) > 0 && !Number.isNaN(turnEnd)) {
+    const entry = await turnEntry($, e.requestId)
+    if (!entry) {
+      // The footer may be drawn before its line is written: reading the clock
+      // subscribes it to the ticker, whose writes draw it again and retry the lookup.
+      if (runs.some(run => run.end === undefined)) {
+        await read($, now)
+      }
+
+      return drawBar($, e, e.props.durationMs, 'done')
+    }
+    if (entry.pending > 0) {
       const at = await $.clock.now()
-      const wait = waitFor(turnEnd, runs, starts, at)
+      const wait = waitFor(entry.at, runs, starts, at)
       if (wait) {
         if (wait.tone === 'running') {
+          // Subscribes the footer to the ticker, so the wait grows.
           await read($, now)
         }
 
