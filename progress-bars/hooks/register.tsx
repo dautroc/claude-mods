@@ -2,9 +2,11 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderInput, ToolGroupCall } from 'claude-code'
 
 import { type BarTone, drawBar, drawNothing, toneOf } from './bar'
-import { historyTimes } from './history'
+import { entryByUuid, historyTimes } from './history'
 import { SHAPE } from './state'
 import { ensureTicking, markEnded, markStarted } from './ticker'
+import { waitFor } from './waits'
+import type { AgentRun } from '../types'
 
 type Engine = EngineInterface
 
@@ -25,6 +27,9 @@ export const REFUSED_PREFIX = "The user doesn't want to proceed with this tool u
 
 // Read by the drawing so a running call's bar grows; the ticker writes it.
 const now = atom({ plugin: 'progress-bars', key: 'now' } as const, 0)
+// The background agents, and the start of each main-loop turn (the last 200).
+const agents = atom({ plugin: 'progress-bars', key: 'agents' } as const, [] as AgentRun[], { shape: SHAPE })
+const turnStarts = atom({ plugin: 'progress-bars', key: 'turnStarts' } as const, [] as number[], { shape: SHAPE })
 
 type Known = { start?: number; end?: number }
 
@@ -167,13 +172,52 @@ export const register: Register = on => {
     await update($, call, () => ({ start }))
     markStarted(e.tool_use_id)
     ensureTicking($)
+    let end: number | undefined
     try {
-      return await next(e)
+      const out = await next(e)
+      const finished = await $.clock.now()
+      end = finished
+      const result = out.result as { status?: unknown; agentId?: unknown } | undefined
+      if (e.tool === 'Agent' && result?.status === 'async_launched' && typeof result.agentId === 'string') {
+        const launched = result.agentId
+        await update($, agents, runs => [...runs, { id: launched, toolUseId: e.tool_use_id, start: finished }])
+        ensureTicking($)
+      }
+
+      return out
     } finally {
       markEnded(e.tool_use_id)
-      const end = await $.clock.now()
+      end ??= await $.clock.now()
       await update($, call, () => ({ start, end }))
     }
+  }).catch(($, e, next) => next(e))
+
+  // The main loop's turns start here. A subagent's turn is not one of them.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId !== undefined) {
+      return next(e)
+    }
+    const at = await $.clock.now()
+    await update($, turnStarts, starts => [...starts, at].slice(-200))
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // A background agent's turn that ends is the end of its run, and the last
+  // such end wins when it was continued.
+  on('turn.complete', async ($, e, next) => {
+    const out = await next(e)
+    if (e.agentId === undefined) {
+      return out
+    }
+    const runs = await read($, agents)
+    if (runs.some(run => run.id === e.agentId)) {
+      const at = await $.clock.now()
+      const outcome: AgentRun['outcome'] = e.isAborted ? 'killed' : e.reason === 'error' || e.reason === 'refusal' ? 'failed' : 'completed'
+      await update($, agents, all => all.map(run => (run.id === e.agentId ? { ...run, end: at, outcome } : run)))
+    }
+
+    return out
   }).catch(($, e, next) => next(e))
 
   // A session that starts while an agent or call is still out, after a reload,
@@ -198,6 +242,31 @@ export const register: Register = on => {
     const hit = await barFor($, e, { ...e.props, isRunning: false, isInterrupted: false })
 
     return hit ? drawNothing($, e) : next(e)
+  }).catch(($, e, next) => next(e))
+
+  // The turn's footer is a bar of its time. When the turn left background
+  // agents running, it is a wait instead, which grows until they finish.
+  on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || e.props.isExpanded === true) {
+      return next(e)
+    }
+    const runs = await read($, agents)
+    const starts = await read($, turnStarts)
+    const entry = await entryByUuid($, e.requestId)
+    const turnEnd = entry?.timestamp === undefined ? NaN : Date.parse(entry.timestamp)
+    if ((entry?.pendingBackgroundAgentCount ?? 0) > 0 && !Number.isNaN(turnEnd)) {
+      const at = await $.clock.now()
+      const wait = waitFor(turnEnd, runs, starts, at)
+      if (wait) {
+        if (wait.tone === 'running') {
+          await read($, now)
+        }
+
+        return drawBar($, e, wait.ms, wait.tone)
+      }
+    }
+
+    return drawBar($, e, e.props.durationMs, 'done')
   }).catch(($, e, next) => next(e))
 
   // A run of calls is one bar of its span, whether or not isCallsOnly is set.
