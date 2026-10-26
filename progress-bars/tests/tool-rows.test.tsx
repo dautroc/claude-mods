@@ -280,13 +280,22 @@ describe('the ticker', () => {
     await ui.unmount()
   })
 
-  // The ticker's clock writes are the observable here: the mock answers
-  // clock.every itself, so a spy on that event cannot be registered.
+  // The ticker's clock writes and its reads of the agents show it stopped: the
+  // mock answers clock.every itself, so a spy on that event cannot be registered.
   test('the ticker stops once the call has ended', async ($, on) => {
     const clock = mock.clock(on, { now: T0 })
     const seen: { id?: string } = {}
     const wrote = writes(on)
     const clockWrites = () => wrote.filter(w => w.key === 'now').length
+    // An idle tick reads the agents; a stopped timer reads nothing.
+    let agentReads = 0
+    on('state.get', (_, e, next) => {
+      if (e.key === 'agents') {
+        agentReads += 1
+      }
+
+      return next(e)
+    })
     bash(on, clock, seen)
 
     const call = $.tool.call({ tool: 'Bash', command: 'make test' })
@@ -296,15 +305,26 @@ describe('the ticker', () => {
     await call
 
     await clock.advance(2_000)
+    expect(agentReads).toBeGreaterThan(0)
     const settled = clockWrites()
+    const readsSettled = agentReads
     await clock.advance(5_000)
     expect(clockWrites()).toBe(settled)
+    expect(agentReads).toBe(readsSettled)
   })
 
   test('a call that throws still empties the open set, so the ticker stops', async ($, on) => {
     const clock = mock.clock(on, { now: T0 })
     const wrote = writes(on)
     const clockWrites = () => wrote.filter(w => w.key === 'now').length
+    let agentReads = 0
+    on('state.get', (_, e, next) => {
+      if (e.key === 'agents') {
+        agentReads += 1
+      }
+
+      return next(e)
+    })
     on('tool.call', { tool: 'Bash' }, async () => {
       await clock.sleep(14_000)
       throw new Error('the tool failed')
@@ -317,8 +337,11 @@ describe('the ticker', () => {
     await call
 
     await clock.advance(2_000)
+    expect(agentReads).toBeGreaterThan(0)
     const settled = clockWrites()
+    const readsSettled = agentReads
     await clock.advance(5_000)
     expect(clockWrites()).toBe(settled)
+    expect(agentReads).toBe(readsSettled)
   })
 })
