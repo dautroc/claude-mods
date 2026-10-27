@@ -28,6 +28,11 @@
       "name": "idea-shelf",
       "source": "./idea-shelf",
       "description": "Keeps the ideas that come up while you code, one shelf per project, in a pane you come back to; /idea saves one out of the main conversation"
+    },
+    {
+      "name": "task-board",
+      "source": "./task-board",
+      "description": "A task list per project, to do → in progress → done, that the agent keeps current as it plans and works, with the steps only you can take marked as yours; /board opens it in a pane"
     }
   ]
 }

@@ -1,0 +1,6 @@
+{
+  "name": "task-board",
+  "version": "0.1.0",
+  "description": "A task list per project, to do → in progress → done, that the agent keeps current as it plans and works, with the steps only you can take marked as yours, in a pane",
+  "types": "./types/index.d.ts"
+}
