@@ -84,6 +84,18 @@ describe('the band', () => {
     }
   })
 
+  test('keeps what the hooks beneath it drew, above its own row', async ($, on) => {
+    engine(on, { text: 'fix it' }, () => NEVER)
+    await start($)
+
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ ...BAND, surface })
+      expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
+      expect((await ui.find({ key: 'enhance' }))?.type).toBe('Button')
+      await ui.unmount()
+    }
+  })
+
   test('leaves slash commands alone', async ($, on) => {
     engine(on, { text: '/compact' }, () => NEVER)
     await start($)

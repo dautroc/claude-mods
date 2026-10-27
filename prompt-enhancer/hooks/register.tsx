@@ -216,30 +216,33 @@ export const register: Register = on => {
     }
 
     const { Box, Button, Text } = $.ui.resolve(e)
+    // What the mods beneath draw in the band (paste-thumbnails' pictures)
+    // stays, above this row.
+    const beneath = await next(e)
 
-    if (now.kind === 'enhancing') {
-      return (
+    const row =
+      now.kind === 'enhancing' ? (
         <Box gap={1}>
           <Text color="magenta">✨ Enhancing your prompt…</Text>
           <Button key="cancel" hotkey="c" label="Cancel" onPress={() => update($, phase, () => IDLE)} />
         </Box>
-      )
-    }
-
-    if (now.kind === 'enhanced') {
-      return (
+      ) : now.kind === 'enhanced' ? (
         <Box gap={1}>
           <Button key="send" hotkey="s" variant="primary" label="Send" onPress={() => send($)} />
           <Button key="undo" hotkey="u" label="Undo" onPress={() => undo($)} />
           <Text dimColor>Enhanced. Edit it in the box if you like.</Text>
         </Box>
+      ) : (
+        <Box gap={1}>
+          <Button key="enhance" hotkey="e" label="✨ Enhance" onPress={() => pressEnhance($)} />
+          <Text dimColor>Make this prompt specific, using the project and the chat so far</Text>
+        </Box>
       )
-    }
 
     return (
-      <Box gap={1}>
-        <Button key="enhance" hotkey="e" label="✨ Enhance" onPress={() => pressEnhance($)} />
-        <Text dimColor>Make this prompt specific, using the project and the chat so far</Text>
+      <Box flexDirection="column">
+        {beneath}
+        {row}
       </Box>
     )
   })
