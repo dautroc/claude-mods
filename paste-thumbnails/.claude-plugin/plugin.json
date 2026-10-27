@@ -1,0 +1,6 @@
+{
+  "name": "paste-thumbnails",
+  "version": "0.1.0",
+  "description": "Shows a thumbnail of each image pasted into the prompt box in the band above it, labelled with its [Image #N] tag",
+  "types": "./types/index.d.ts"
+}
