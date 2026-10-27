@@ -1,0 +1,6 @@
+{
+  "name": "idea-shelf",
+  "version": "0.1.0",
+  "description": "Keeps the ideas that come up while you code, one shelf per project, in a pane you come back to; /idea saves one out of the main conversation",
+  "types": "./types/index.d.ts"
+}

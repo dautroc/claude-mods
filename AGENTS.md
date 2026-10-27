@@ -32,3 +32,9 @@
 
 - `/transcript` writes the chat as Markdown to `$TMPDIR/claude-transcripts/transcript-<first 8 of the session id>.md`, rewritten each run, then runs `mado action -s $MADO_SESSION edit-file <file> <line>`. Mado opens the session's editor (nvim unless set otherwise) on it in its enlarged float, at the newest prompt's heading. Outside a Mado pane it writes the file and says where. The command is `immediate`, so it runs mid-turn.
 - The rows come from `$.session.messages()`: at most the newest 4096, with no timestamps. After a compaction the earlier turns are one summary row: a spike on 2026-10-26 confirmed this on a resumed session. `hooks/markdown.ts` drops the rows the engine writes as user text (command output and its caveat, a skill's body, task notifications, system reminders) by their openings, and this command's own records.
+
+## idea-shelf
+
+- `/idea <text>` saves an idea; `/idea` alone and `/ideas` open the shelf, a pane listing the project's ideas newest first, with a field to add one and Remove on each. Both commands are `immediate`. Like `aside`, an outer `command.run` hook keeps the text and passes `next` empty `args`, so the main model sees `/idea` alone. A save is confirmed by a toast, not command output, which would reach the model.
+- The ideas live in `$.store` under `ideas:<root>`, where the root is `$.session.repo().root` (the main working tree's for a worktree, so a repo's worktrees share a shelf), else `$.session.root()`. Each change reads the key again just before writing it, and changes run one at a time, so ideas saved meanwhile by another session or by a second save are kept. `$.state` holds only what the pane draws, read from the store each time the pane opens.
+- In `claude plugin test`, the test's own `$` has no `store`, and a hook that throws is skipped rather than failing the call: the tests answer `store.*` themselves, and refuse a write with `{ deny }`.

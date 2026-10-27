@@ -23,6 +23,11 @@
       "name": "transcript",
       "source": "./transcript",
       "description": "Opens this chat as Markdown in nvim in a Mado float, to read and search it"
+    },
+    {
+      "name": "idea-shelf",
+      "source": "./idea-shelf",
+      "description": "Keeps the ideas that come up while you code, one shelf per project, in a pane you come back to; /idea saves one out of the main conversation"
     }
   ]
 }
