@@ -509,6 +509,26 @@ describe('/reply-style copy', () => {
     expect(seen.toasts).toEqual(['Copied the last code block.'])
   })
 
+  test('with draft, copies the last draft in it under its label', async ($, on) => {
+    const seen = clipboard(on, [
+      { role: 'user', text: 'Draft both' },
+      {
+        role: 'assistant',
+        text: '```copy Email subject\nDeploy done\n```\n\n```sh\nmake deploy\n```\n\n```copy Email to Hana\nHi Hana,\n\ndone.\n```',
+      },
+    ])
+    await runCommand($, 'copy draft')
+    expect(seen.copies).toEqual(['Hi Hana,\n\ndone.'])
+    expect(seen.toasts).toEqual(['Copied “Email to Hana”.'])
+  })
+
+  test('says so when the last reply has no draft', async ($, on) => {
+    const seen = clipboard(on, [...messages])
+    await runCommand($, 'copy draft')
+    expect(seen.copies).toEqual([])
+    expect(seen.toasts).toEqual(['The last reply has no draft.'])
+  })
+
   test('says so when there is nothing to copy', async ($, on) => {
     const seen = clipboard(on, [
       { role: 'user', text: 'Hi' },
@@ -522,6 +542,6 @@ describe('/reply-style copy', () => {
   test('says how to use it when the arguments are wrong', async ($, on) => {
     const seen = clipboard(on, [...messages])
     await runCommand($, 'paste')
-    expect(seen.toasts).toEqual(['Usage: /reply-style copy [code]'])
+    expect(seen.toasts).toEqual(['Usage: /reply-style copy [code|draft]'])
   })
 })

@@ -34,15 +34,17 @@ function isMarkdown(blocks: Block[]): boolean {
   )
 }
 
-// The last code block in the reply, inside a list or a quote too.
-function lastCode(blocks: Block[]): string | undefined {
+type Copyable = Extract<Block, { kind: 'code' | 'copy' }>
+
+// The last code or copy block in the reply, inside a list or a quote too.
+function lastOf<K extends Copyable['kind']>(blocks: Block[], kind: K): Extract<Block, { kind: K }> | undefined {
   for (const block of blocks.toReversed()) {
-    if (block.kind === 'code') return block.source
+    if (block.kind === kind) return block as Extract<Block, { kind: K }>
     const inner =
       block.kind === 'quote'
-        ? lastCode(block.blocks)
+        ? lastOf(block.blocks, kind)
         : block.kind === 'list'
-          ? lastCode(block.items.flatMap(item => item.blocks))
+          ? lastOf(block.items.flatMap(item => item.blocks), kind)
           : undefined
     if (inner !== undefined) return inner
   }
@@ -115,8 +117,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'reply-style',
-      description: "Copy Claude's last reply, or with code the last code block in it",
-      argumentHint: 'copy [code]',
+      description: "Copy Claude's last reply, or the last code block or draft in it",
+      argumentHint: 'copy [code|draft]',
       immediate: true,
     })
 
@@ -126,8 +128,8 @@ export const register: Register = on => {
   // Answered with a toast and no output row, which the model would read.
   on('command.run', { command: 'reply-style' }, async ($, e) => {
     const [verb, what, ...rest] = e.args.trim().split(/\s+/)
-    if (verb !== 'copy' || (what !== undefined && what !== 'code') || rest.length > 0) {
-      $.ui.toast('Usage: /reply-style copy [code]')
+    if (verb !== 'copy' || (what !== undefined && what !== 'code' && what !== 'draft') || rest.length > 0) {
+      $.ui.toast('Usage: /reply-style copy [code|draft]')
 
       return {}
     }
@@ -144,9 +146,18 @@ export const register: Register = on => {
       return {}
     }
 
-    const code = lastCode(parse(reply.text))
+    const blocks = parse(reply.text)
+    if (what === 'draft') {
+      const draft = lastOf(blocks, 'copy')
+      if (draft === undefined) $.ui.toast('The last reply has no draft.')
+      else await copy($, draft.text, draft.label ? `“${draft.label}”` : 'the last draft')
+
+      return {}
+    }
+
+    const code = lastOf(blocks, 'code')
     if (code === undefined) $.ui.toast('The last reply has no code block.')
-    else await copy($, code, 'the last code block')
+    else await copy($, code.source, 'the last code block')
 
     return {}
   })
