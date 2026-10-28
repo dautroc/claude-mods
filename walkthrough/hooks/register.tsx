@@ -1,21 +1,25 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Diagram, Review, Shown } from '../types'
+import type { Cursor, Diagram, Review, Shown } from '../types'
 import { type Actions, drawItem, drawSummary } from './draw'
 import { type Colors, colorsOf, parseRendered } from './preview'
 import {
   MAX_CHOICES,
   MAX_ITEMS,
   answersMessage,
+  defaultChoice,
   goTo,
   isAnswered,
   isSummary,
+  mark,
   nextUnanswered,
   openedText,
   parseReview,
-  pick,
+  ringKeys,
   setNote,
+  stepRing,
+  submit,
 } from './review'
 
 type Engine = EngineInterface
@@ -30,6 +34,27 @@ const MAX_PNG_BYTES = 2 * 1024 * 1024
 const review = atom({ plugin: 'walkthrough', key: 'review' } as const, null, { shape: 'review-1' })
 const diagrams = atom({ plugin: 'walkthrough', key: 'diagrams' } as const, { review: '', byItem: {} }, { shape: 'diagrams-1' })
 const shown = atom({ plugin: 'walkthrough', key: 'shown' } as const, 'picture' as Shown)
+const cursor = atom({ plugin: 'walkthrough', key: 'cursor' } as const, null, { shape: 'cursor-1' })
+// How many notes Enter has saved, which keys the Note field: the terminal
+// empties a field on Enter and puts back the text it is drawn with only when
+// that differs from the last, so each save draws a field afresh.
+const saved = atom({ plugin: 'walkthrough', key: 'saved' } as const, 0)
+// Docked as wide as it may be; inline above the prompt, as tall.
+const OPEN = { id: PANE, title: 'Review', focus: true, columns: 96, rows: 40 } as const
+
+// What the terminal last said of the pane's keyboard: whether the pane held
+// the keys, when it last lost them, and the element its ring is on. A key the
+// pane doesn't take (Space, a letter that is no hotkey) leaves it for the
+// prompt box as an edit, and these tell that edit apart from typing there.
+let hadKeys = false
+let lostKeysAt = 0
+let ring: string | undefined
+// How soon after the pane lost the keys an edit still counts as typed in it.
+const STRAY_MS = 200
+
+function noteKey(saves: number): string {
+  return `note-${saves}`
+}
 
 function argsOf(e: object): Record<string, unknown> {
   return e as Record<string, unknown>
@@ -116,8 +141,7 @@ async function drawDiagrams($: Engine, fresh: Review): Promise<Record<string, Di
 // Opens the pane with the keyboard, and says where it went when it couldn't
 // take it.
 async function openPane($: Engine): Promise<boolean> {
-  // Docked as wide as it may be; inline above the prompt, as tall.
-  const opened = await $.ui.open({ id: PANE, title: 'Review', focus: true, columns: 96, rows: 40 })
+  const opened = await $.ui.open(OPEN)
   if (!opened.isPlaced) {
     $.ui.toast('Claude has items for you to review: /walk opens them.')
 
@@ -171,6 +195,8 @@ async function send($: Engine) {
 
   await update($, review, () => null)
   await $.ui.close({ id: PANE }).catch(() => undefined)
+  hadKeys = false
+  ring = undefined
   $.clock.after(1, () => void deliver($, sent))
 }
 
@@ -187,21 +213,147 @@ async function deliver($: Engine, sent: Review) {
   $.ui.toast(`Couldn't send your answers (${why}). /walk opens the review again.`)
 }
 
-function actionsFor($: Engine, current: Review): Actions {
+// The choice the ring starts on in the item shown: the last one it was on
+// there, else the one picked or recommended.
+function cursorOf(current: Review, last: Cursor | null): number {
+  return last !== null && last.review === current.id && last.at === current.at ? last.choice : defaultChoice(current)
+}
+
+// Where the ring starts in what the pane shows, as the drawing's autoFocus
+// says: the cursor's choice, `l` on an item without choices, Send.
+function startKey(current: Review, last: Cursor | null): string {
+  if (isSummary(current)) {
+    return 'send'
+  }
+
+  return current.items[current.at]!.choices.length > 0 ? `choice-${cursorOf(current, last)}` : 'key-l'
+}
+
+// The ring is on `key` now: keep it, and on a choice, the cursor too.
+async function noteRing($: Engine, current: Review, key: string | undefined) {
+  ring = key
+  if (key?.startsWith('choice-') && !isSummary(current)) {
+    const choice = Number(key.slice('choice-'.length))
+    await update($, cursor, () => ({ review: current.id, at: current.at, choice }))
+  }
+}
+
+async function focusOn($: Engine, current: Review, key: string) {
+  const moved = await $.ui.focus({ requestId: PANE, key }).catch(() => ({ deny: 'not focused' }))
+  if (moved.deny === undefined) {
+    await noteRing($, current, key)
+  }
+}
+
+// The pane moved to another item or the summary: the ring goes where it
+// starts there.
+async function focusStart($: Engine, id: string) {
+  const current = await read($, review)
+  if (current !== null && current.id === id) {
+    await focusOn($, current, startKey(current, await read($, cursor)))
+  }
+}
+
+// j (`by` 1) and k (-1): the ring down or up the choices, or the summary's
+// items and Send.
+async function moveRing($: Engine, id: string, by: number) {
+  const current = await read($, review)
+  if (current === null || current.id !== id) {
+    return
+  }
+
+  const keys = ringKeys(current)
+  if (keys.length > 0) {
+    await focusOn($, current, stepRing(keys, ring, startKey(current, await read($, cursor)), by))
+  }
+}
+
+// Enter in the field saves the note. On an item with choices the ring goes
+// back to them; without, the note is the answer and the pane moves on, past
+// the item as skipped while it is empty.
+async function submitNote($: Engine, id: string, value: string) {
+  await update($, saved, n => n + 1)
+  await change($, id, r => {
+    const noted = setNote(r, value)
+    if (isSummary(noted) || noted.items[noted.at]!.choices.length > 0) {
+      return noted
+    }
+
+    return goTo(noted, isAnswered(noted.answers[noted.at]) ? nextUnanswered(noted, noted.at) : noted.at + 1)
+  })
+  await focusStart($, id)
+}
+
+// Gives the pane the keys back, the ring starting where it starts; refused
+// while the prompt box holds a draft.
+async function takeKeys($: Engine) {
+  await $.ui.open(OPEN).catch(() => undefined)
+}
+
+// The terminal drew the pane: whether it holds the keys. Losing them with the
+// ring in the Note field is Esc there, which clears the note and gives the
+// keys back to the choices.
+async function trackKeys($: Engine, isFocused: boolean) {
+  if (hadKeys && !isFocused) {
+    lostKeysAt = await $.clock.now()
+    if (ring?.startsWith('note-')) {
+      ring = undefined
+      $.clock.after(1, () => void clearNote($))
+    }
+  }
+  hadKeys = isFocused
+}
+
+async function clearNote($: Engine) {
+  const current = await read($, review)
+  if (current !== null && !isSummary(current)) {
+    await change($, current.id, r => setNote(r, ''))
+    await takeKeys($)
+  }
+}
+
+// Whether an edit of the empty prompt box is a key typed in the pane: one
+// that came while the pane held the keys, or as it lost them.
+async function isStray($: Engine): Promise<boolean> {
+  if (!hadKeys && (await $.clock.now()) - lostKeysAt > STRAY_MS) {
+    return false
+  }
+  if ((await read($, review)) === null) {
+    return false
+  }
+
+  const pane = (await $.ui.panes()).find(each => each.id === PANE)
+
+  return pane?.isShown === true && pane.isPlaced
+}
+
+// Space in the pane: the choice under the ring marked.
+async function markRing($: Engine) {
+  const current = await read($, review)
+  if (current !== null && !isSummary(current) && ring?.startsWith('choice-')) {
+    const choice = Number(ring.slice('choice-'.length))
+    await change($, current.id, r => mark(r, choice))
+  }
+}
+
+function actionsFor($: Engine, current: Review, note: string): Actions {
   const { id } = current
 
   return {
-    pick: choice => void change($, id, r => pick(r, choice)),
-    go: at => void change($, id, r => goTo(r, at)),
+    submit: choice => void change($, id, r => submit(r, choice)).then(() => focusStart($, id)),
+    move: by => void moveRing($, id, by),
+    go: at => void change($, id, r => goTo(r, at)).then(() => focusStart($, id)),
     note: value => void change($, id, r => setNote(r, value)),
-    // Enter in the field: the item is done, or skipped while still empty.
-    submitNote: value =>
-      void change($, id, r => {
-        const noted = setNote(r, value)
-
-        return goTo(noted, isAnswered(noted.answers[noted.at]) ? nextUnanswered(noted, noted.at) : noted.at + 1)
-      }),
-    write: () => void $.ui.focus({ requestId: PANE, key: 'note' }).catch(() => undefined),
+    submitNote: value => void submitNote($, id, value),
+    write: () =>
+      void $.ui
+        .focus({ requestId: PANE, key: note })
+        .then(moved => {
+          if (moved.deny === undefined) {
+            ring = note
+          }
+        })
+        .catch(() => undefined),
     cycle: modes =>
       void update($, shown, mode => {
         const now = modes.indexOf(mode)
@@ -331,12 +483,49 @@ export const register: Register = on => {
       await update($, review, () => null)
       await update($, diagrams, () => ({ review: '', byItem: {} }))
       await $.ui.close({ id: PANE }).catch(() => undefined)
+      hadKeys = false
+      ring = undefined
     }
 
     return next(e)
   })
 
+  // The person's Tab, arrows or click, or an autoFocus as the pane takes the
+  // keys, moved the ring. The mod's own $.ui.focus moves don't come here.
+  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
+    const moved = await next(e)
+    if (moved.deny === undefined) {
+      const current = await read($, review)
+      if (current === null) {
+        ring = e.element
+      } else {
+        await noteRing($, current, e.element)
+      }
+    }
+
+    return moved
+  })
+
+  // A key the pane doesn't take lands in the empty prompt box and takes the
+  // keys there. It is kept out of the box, the keys go back to the pane, and
+  // Space marks the choice under the ring.
+  on('prompt.edit', async ($, e, next) => {
+    if (e.key === undefined || e.text !== '' || !(await isStray($))) {
+      return next(e)
+    }
+    if (e.key.key === 'space') {
+      await markRing($)
+    }
+    $.clock.after(1, () => void takeKeys($))
+
+    return { text: e.text, cursor: e.cursor }
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    if (e.surface === 'terminal') {
+      await trackKeys($, e.props.isFocused)
+    }
+
     const current = await read($, review)
     const el = $.ui.resolve(e)
     if (current === null) {
@@ -345,10 +534,11 @@ export const register: Register = on => {
 
     const drawn = await read($, diagrams)
     const mode = await read($, shown)
+    const note = noteKey(await read($, saved))
     const d = {
       el,
       surface: e.surface,
-      act: actionsFor($, current),
+      act: actionsFor($, current, note),
       columns: e.props.bodyColumns,
       rows: e.props.scroll.bodyRows,
     }
@@ -356,7 +546,9 @@ export const register: Register = on => {
       return drawSummary(d, current)
     }
 
-    return drawItem(d, current, drawn.review === current.id ? drawn.byItem[String(current.at)] : undefined, mode)
+    const diagram = drawn.review === current.id ? drawn.byItem[String(current.at)] : undefined
+
+    return drawItem(d, current, diagram, mode, cursorOf(current, await read($, cursor)), note)
   })
 
   // The call's row lists the items' titles, with a button that opens the pane

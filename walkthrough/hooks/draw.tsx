@@ -16,7 +16,8 @@ const COLOR = {
 
 // What the pane's controls do, bound to the session by the hooks module.
 export type Actions = {
-  pick: (choice: number) => void
+  submit: (choice: number) => void
+  move: (by: number) => void
   go: (at: number) => void
   note: (value: string) => void
   submitNote: (value: string) => void
@@ -145,31 +146,31 @@ function drawPreview(d: Draw, item: Item, diagram: Diagram | undefined, shown: S
   )
 }
 
-function drawChoices(d: Draw, item: Item, picked: readonly number[]): RenderElement | null {
+// The choices, the ring starting on `cursor`. Enter (or on a single-choice
+// item its digit) submits the one under the ring; Space, which the hooks
+// module catches, marks it.
+function drawChoices(d: Draw, item: Item, picked: readonly number[], cursor: number): RenderElement | null {
   if (item.choices.length === 0) {
     return null
   }
 
   const { Box, Button, Text } = d.el
-  const first = Math.max(
-    0,
-    item.choices.findIndex(choice => choice.recommended === true),
-  )
+  const multi = item.multiSelect === true
 
   return (
     <Box flexDirection="column">
       {item.choices.map((choice, k) => {
         const isPicked = picked.includes(k)
-        const mark = item.multiSelect === true ? (isPicked ? '[x] ' : '[ ] ') : isPicked ? '● ' : '○ '
+        const mark = multi ? (isPicked ? '[x] ' : '[ ] ') : isPicked ? '● ' : '○ '
 
         return (
           <Box flexDirection="column">
             <Button
               key={`choice-${k}`}
               plain
-              hotkey={String(k + 1)}
-              onPress={() => d.act.pick(k)}
-              {...(k === first ? { autoFocus: true as const } : {})}
+              onPress={() => d.act.submit(k)}
+              {...(multi ? {} : { hotkey: String(k + 1) })}
+              {...(k === cursor ? { autoFocus: true as const } : {})}
             >
               {isPicked ? <Text color={COLOR.done}>{mark}</Text> : mark}
               {choice.label}
@@ -187,15 +188,32 @@ function drawChoices(d: Draw, item: Item, picked: readonly number[]): RenderElem
   )
 }
 
-function key(d: Draw, hotkey: string, label: string, onPress: () => void): RenderElement {
+function key(d: Draw, hotkey: string, label: string, onPress: () => void, autoFocus = false): RenderElement {
   const { Button } = d.el
 
-  return <Button key={`key-${hotkey}`} plain dimColor hotkey={hotkey} label={label} onPress={onPress} />
+  return (
+    <Button
+      key={`key-${hotkey}`}
+      plain
+      dimColor
+      hotkey={hotkey}
+      label={label}
+      onPress={onPress}
+      {...(autoFocus ? { autoFocus: true as const } : {})}
+    />
+  )
 }
 
-// One item: its title and body, the preview, the recommendation, the choices,
-// the Note field and the keys.
-export function drawItem(d: Draw, review: Review, diagram: Diagram | undefined, shown: Shown): RenderElement {
+// One item: its title and body, the preview, the recommendation, the choices
+// with the ring starting on `cursor`, the Note field keyed `note` and the keys.
+export function drawItem(
+  d: Draw,
+  review: Review,
+  diagram: Diagram | undefined,
+  shown: Shown,
+  cursor: number,
+  note: string,
+): RenderElement {
   const { Box, Markdown, Text } = d.el
   const item = review.items[review.at]!
   const answer = review.answers[review.at]!
@@ -219,21 +237,22 @@ export function drawItem(d: Draw, review: Review, diagram: Diagram | undefined, 
           {item.recommendation}
         </Text>
       )}
-      {drawChoices(d, item, answer.picked)}
+      {drawChoices(d, item, answer.picked, cursor)}
       {d.surface !== 'mobile' && 'Input' in d.el && (
         <d.el.Input
-          key="note"
+          key={note}
           value={answer.note}
           placeholder={item.choices.length === 0 ? 'Your answer' : 'A note, or your own answer'}
-          submitLabel="next"
+          submitLabel={item.choices.length === 0 ? 'next' : 'save'}
           onInput={value => d.act.note(value)}
           onSubmit={value => d.act.submitNote(value)}
-          {...(item.choices.length === 0 ? { autoFocus: true as const } : {})}
         />
       )}
       <Box columnGap={2} flexWrap="wrap">
-        {review.at > 0 ? key(d, 'p', 'back', () => d.act.go(review.at - 1)) : null}
-        {key(d, 'n', review.at + 1 < n ? 'next' : 'summary', () => d.act.go(review.at + 1))}
+        {item.choices.length > 0 ? key(d, 'j', 'down', () => d.act.move(1)) : null}
+        {item.choices.length > 0 ? key(d, 'k', 'up', () => d.act.move(-1)) : null}
+        {review.at > 0 ? key(d, 'h', 'back', () => d.act.go(review.at - 1)) : null}
+        {key(d, 'l', review.at + 1 < n ? 'next' : 'summary', () => d.act.go(review.at + 1), item.choices.length === 0)}
         {d.surface !== 'mobile' ? key(d, 'w', 'write', d.act.write) : null}
         {modes.length > 1 ? key(d, 't', 'picture/text', () => d.act.cycle(modes)) : null}
         {picture !== undefined ? key(d, 'v', 'view large', () => d.act.view(picture)) : null}
@@ -270,7 +289,9 @@ export function drawSummary(d: Draw, review: Review): RenderElement {
       </Box>
       <Box columnGap={2} flexWrap="wrap">
         <Button key="send" label="Send answers" variant="primary" hotkey="s" autoFocus onPress={d.act.send} />
-        {key(d, 'p', 'back', () => d.act.go(n - 1))}
+        {key(d, 'j', 'down', () => d.act.move(1))}
+        {key(d, 'k', 'up', () => d.act.move(-1))}
+        {key(d, 'h', 'back', () => d.act.go(n - 1))}
       </Box>
       {answered < n && <Text dimColor>Unanswered items are sent as skipped.</Text>}
     </Box>

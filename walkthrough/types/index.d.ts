@@ -43,8 +43,18 @@ export type Diagrams = { review: string; byItem: Record<string, Diagram> }
 // How a diagram is shown: the picture, the text version, or its source.
 export type Shown = 'picture' | 'text' | 'source'
 
+// The choice the ring was last on in item `at` of review `review`, where the
+// ring starts when the pane takes the keys again.
+export type Cursor = { review: string; at: number; choice: number }
+
 declare module 'claude-code' {
   interface PluginState {
-    walkthrough: { review: Shaped<Review | null>; diagrams: Shaped<Diagrams>; shown: Shown }
+    walkthrough: {
+      review: Shaped<Review | null>
+      diagrams: Shaped<Diagrams>
+      shown: Shown
+      cursor: Shaped<Cursor | null>
+      saved: number
+    }
   }
 }

@@ -125,26 +125,76 @@ function withAnswer(review: Review, at: number, fn: (answer: Answer) => Answer):
   return { ...review, answers: review.answers.map((answer, k) => (k === at ? fn(answer) : answer)) }
 }
 
-// Choice `choice` of the item shown, pressed: on a single-choice item it is
-// the answer and the pane moves on; on a multi-select one it is toggled.
-export function pick(review: Review, choice: number): Review {
+function isChoice(review: Review, choice: number): boolean {
   const item = review.items[review.at]
-  if (item === undefined || choice < 0 || choice >= item.choices.length) {
+
+  return item !== undefined && choice >= 0 && choice < item.choices.length
+}
+
+// Space on choice `choice` of the item shown: on a single-choice item it
+// becomes the answer, on a multi-select one it is toggled; the pane stays.
+export function mark(review: Review, choice: number): Review {
+  if (!isChoice(review, choice)) {
+    return review
+  }
+  if (review.items[review.at]!.multiSelect !== true) {
+    return withAnswer(review, review.at, answer => ({ ...answer, picked: [choice] }))
+  }
+
+  return withAnswer(review, review.at, answer => ({
+    ...answer,
+    picked: answer.picked.includes(choice)
+      ? answer.picked.filter(k => k !== choice)
+      : [...answer.picked, choice].sort((a, b) => a - b),
+  }))
+}
+
+// Enter on choice `choice` of the item shown: on a single-choice item it is
+// the answer; a multi-select one keeps what Space marked, or takes this one
+// when nothing is. The pane moves on to the next unanswered item.
+export function submit(review: Review, choice: number): Review {
+  if (!isChoice(review, choice)) {
     return review
   }
 
-  if (item.multiSelect === true) {
-    return withAnswer(review, review.at, answer => ({
-      ...answer,
-      picked: answer.picked.includes(choice)
-        ? answer.picked.filter(k => k !== choice)
-        : [...answer.picked, choice].sort((a, b) => a - b),
-    }))
-  }
-
-  const answered = withAnswer(review, review.at, answer => ({ ...answer, picked: [choice] }))
+  const multi = review.items[review.at]!.multiSelect === true
+  const answered = withAnswer(review, review.at, answer =>
+    multi && answer.picked.length > 0 ? answer : { ...answer, picked: [choice] },
+  )
 
   return { ...answered, at: nextUnanswered(answered, review.at) }
+}
+
+// The choice the ring starts on in the item shown: the one picked, else the
+// one recommended, else the first.
+export function defaultChoice(review: Review): number {
+  const item = review.items[review.at]
+  if (item === undefined) {
+    return 0
+  }
+
+  return review.answers[review.at]?.picked[0] ?? Math.max(0, item.choices.findIndex(c => c.recommended === true))
+}
+
+// The elements j and k walk: the item's choices, or on the summary its items
+// and Send.
+export function ringKeys(review: Review): string[] {
+  if (isSummary(review)) {
+    return [...review.items.map((_, k) => `item-${k}`), 'send']
+  }
+
+  return review.items[review.at]!.choices.map((_, k) => `choice-${k}`)
+}
+
+// Where j (`by` 1) or k (-1) takes the ring from `ring`, held to the ends;
+// from an element they don't walk, to `fallback`.
+export function stepRing(keys: readonly string[], ring: string | undefined, fallback: string, by: number): string {
+  const now = ring === undefined ? -1 : keys.indexOf(ring)
+  if (now < 0) {
+    return fallback
+  }
+
+  return keys[Math.max(0, Math.min(keys.length - 1, now + by))]!
 }
 
 export function setNote(review: Review, note: string): Review {

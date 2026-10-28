@@ -1,10 +1,18 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import type { On, PromptComposeTrait, RenderSurface } from 'claude-code'
+import type {
+  On,
+  PromptComposeTrait,
+  PromptEditInput,
+  PromptEditResult,
+  RenderSurface,
+  UiFocusInput,
+  UiFocusResult,
+} from 'claude-code'
 import type { Engine, Mounted } from 'claude-code/testing'
 
 import type { Review } from '../types'
 import { colorsOf, diagramText, pictureBox } from '../hooks/preview'
-import { answersMessage, parseReview } from '../hooks/review'
+import { answersMessage, defaultChoice, goTo, mark, parseReview, ringKeys, stepRing, submit } from '../hooks/review'
 
 const TOOL = 'mcp__walkthrough__review_items'
 const PANE = {
@@ -98,6 +106,7 @@ function engine(
   on('ui.panes', () => ({
     value: [{ id: 'walkthrough', title: 'Review', isShown: true, isFocused: true, isPlaced: true }],
   }))
+  on('ui.focus', () => ({}))
   on('ui.close', (_, e) => {
     seen.closes.push(e.id)
 
@@ -171,6 +180,31 @@ async function labels(ui: Pick<Mounted, 'findAll'>) {
   return (await ui.findAll({ type: 'Button' })).map(found => String(found.props.key))
 }
 
+// The engine's editor beneath the mod: the box with the splice applied.
+function editor(on: On) {
+  on('prompt.edit', (_, e) => ({
+    text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end),
+    cursor: e.start + e.inputText.length,
+  }))
+}
+
+// The person moving the pane's ring onto `element` (Tab, the arrows, a
+// click). The mod's own focus moves need the engine's ring, which the kit
+// doesn't have.
+function ringTo($: Engine, element: string) {
+  const ui = $.ui as unknown as { focus: (e: UiFocusInput) => Promise<UiFocusResult> }
+
+  return ui.focus({ component: 'Pane', requestId: 'walkthrough', plugin: 'walkthrough', element, origin: { kind: 'person' } })
+}
+
+// One key typed into the empty prompt box, as the editor raises it. The kit's
+// types leave `prompt.edit` off `$`; the test engine raises it all the same.
+function type($: Engine, key: string, inputText = key === 'space' ? ' ' : key) {
+  const prompt = $.prompt as unknown as { edit: (e: PromptEditInput) => Promise<PromptEditResult> }
+
+  return prompt.edit({ origin: { kind: 'composer' }, key: { key }, text: '', cursor: 0, start: 0, end: 0, inputText })
+}
+
 describe('the helpers', () => {
   test('parse a review, saying what is wrong with a bad one', () => {
     const review = parseReview(INPUT, 'r')
@@ -207,6 +241,28 @@ describe('the helpers', () => {
         '3. Name: skipped',
       ].join('\n'),
     )
+  })
+
+  test('mark and submit a choice, and step the ring', () => {
+    const review = parseReview(INPUT, 'r')
+    const multi = goTo(review, 1)
+    expect(mark(review, 1).answers[0]!.picked).toEqual([1])
+    expect(mark(review, 1).at).toBe(0)
+    expect(mark(mark(multi, 2), 0).answers[1]!.picked).toEqual([0, 2])
+    expect(mark(mark(multi, 2), 2).answers[1]!.picked).toEqual([])
+    expect(submit(review, 1).at).toBe(1)
+    expect(submit(multi, 1).answers[1]!.picked).toEqual([1])
+    expect(submit(mark(multi, 2), 0).answers[1]!.picked).toEqual([2])
+    expect(defaultChoice(review)).toBe(0)
+    expect(defaultChoice(mark(multi, 2))).toBe(2)
+
+    const keys = ringKeys(review)
+    expect(keys).toEqual(['choice-0', 'choice-1'])
+    expect(stepRing(keys, 'choice-0', 'choice-0', 1)).toBe('choice-1')
+    expect(stepRing(keys, 'choice-1', 'choice-0', 1)).toBe('choice-1')
+    expect(stepRing(keys, 'choice-0', 'choice-0', -1)).toBe('choice-0')
+    expect(stepRing(keys, 'key-w', 'choice-1', 1)).toBe('choice-1')
+    expect(ringKeys(goTo(review, 3))).toEqual(['item-0', 'item-1', 'item-2', 'send'])
   })
 
   test('size a picture to the pane, and pick the text that fits', () => {
@@ -346,7 +402,7 @@ describe('the pane', () => {
     expect(shown).toContain('Cache key')
     expect(shown).toContain('★ Recommended: ')
     expect(shown).toContain('Worktrees share')
-    expect(await labels(ui)).toEqual(['choice-0', 'choice-1', 'key-n', 'key-w', 'key-s'])
+    expect(await labels(ui)).toEqual(['choice-0', 'choice-1', 'key-j', 'key-k', 'key-l', 'key-w', 'key-s'])
     expect((await ui.find({ key: 'choice-0' }))?.props.autoFocus).toBe(true)
     expect((await ui.find({ key: 'choice-1' }))?.props.hotkey).toBe('2')
     await ui.unmount()
@@ -355,18 +411,21 @@ describe('the pane', () => {
   test('walks the items to the summary and sends the answers as the next message', async ($, on) => {
     const clock = mock.clock(on)
     const seen = engine(on, DRAWN)
+    editor(on)
     await start($)
     await call($)
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     await ui.press({ key: 'choice-0' })
     expect(await texts(ui)).toContain('2 / 3')
-    await ui.press({ key: 'choice-0' })
-    await ui.press({ key: 'choice-2' })
+    await ringTo($, 'choice-0')
+    await type($, 'space')
+    await ringTo($, 'choice-2')
+    await type($, 'space')
     expect(await texts(ui)).toContain('[x] ')
-    await ui.press({ key: 'key-n' })
+    await ui.press({ key: 'choice-2' })
     expect(await texts(ui)).toContain('3 / 3')
-    await ui.input({ key: 'note', text: 'walkthrough' })
+    await ui.input({ key: 'note-0', text: 'walkthrough' })
     expect(await texts(ui)).toContain('3 of 3 answered')
     await ui.press({ key: 'send' })
     await clock.advance(1)
@@ -383,6 +442,73 @@ describe('the pane', () => {
     const after = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect((await texts(after))[0]).toMatch(/^No review is open/)
     await after.unmount()
+  })
+
+  test('Space marks the choice under the ring, Enter submits it, h and l move', async ($, on) => {
+    mock.clock(on)
+    engine(on, DRAWN)
+    editor(on)
+    await start($)
+    await call($)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.find({ key: 'choice-0' }))?.props.autoFocus).toBe(true)
+    await ringTo($, 'choice-1')
+    expect((await ui.find({ key: 'choice-1' }))?.props.autoFocus).toBe(true)
+    expect(await type($, 'space')).toEqual({ text: '', cursor: 0 })
+    expect(await texts(ui)).toContain('1 / 3')
+    expect((await ui.find({ key: 'choice-1' }))?.text).toBe('● Per-session key')
+
+    await ui.press({ key: 'key-l' })
+    expect(await texts(ui)).toContain('2 / 3')
+    expect((await ui.find({ key: 'choice-0' }))?.props.hotkey).toBeUndefined()
+    await ui.press({ key: 'choice-1' })
+    expect(await texts(ui)).toContain('3 / 3')
+    await ui.press({ key: 'key-h' })
+    expect((await ui.find({ key: 'choice-1' }))?.text).toBe('[x] Types')
+    await ui.unmount()
+  })
+
+  test('a key the pane does not take stays out of the prompt box and gives the keys back', async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = engine(on, DRAWN)
+    editor(on)
+    await start($)
+    await call($)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const opened = seen.opens.length
+    expect(await type($, 'x')).toEqual({ text: '', cursor: 0 })
+    await clock.advance(1)
+    expect(seen.opens.length).toBe(opened + 1)
+
+    await ui.redraw({ ...PANE.props, isFocused: false })
+    await clock.advance(1000)
+    expect(await type($, 'x')).toEqual({ text: 'x', cursor: 1 })
+    await ui.unmount()
+  })
+
+  test('Esc in the note clears it and gives the keys back; Enter saves it', async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = engine(on, DRAWN)
+    await start($)
+    await call($)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ringTo($, 'note-0')
+    await ui.input({ key: 'note-0', text: 'only on main', kind: 'change' })
+    const opened = seen.opens.length
+    await ui.redraw({ ...PANE.props, isFocused: false })
+    await clock.advance(1)
+    expect((await ui.find({ key: 'note-0' }))?.props.value).toBe('')
+    expect(seen.opens.length).toBe(opened + 1)
+
+    await ui.redraw({ ...PANE.props, isFocused: true })
+    await ui.input({ key: 'note-0', text: 'only on main' })
+    expect(await texts(ui)).toContain('1 / 3')
+    expect(await ui.find({ key: 'note-0' })).toBeUndefined()
+    expect((await ui.find({ key: 'note-1' }))?.props.value).toBe('only on main')
+    await ui.unmount()
   })
 
   test('the summary marks what was skipped, and a digit goes back to change it', async ($, on) => {
@@ -422,8 +548,8 @@ describe('the pane', () => {
     await call($)
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    await ui.press({ key: 'key-n' })
-    await ui.press({ key: 'key-n' })
+    await ui.press({ key: 'key-l' })
+    await ui.press({ key: 'key-l' })
     const image = await ui.find({ key: 'diagram' })
     expect(image?.props.source).toEqual({ png: BLUE })
     expect(image?.props.columns).toBe(40)
@@ -477,7 +603,7 @@ describe('the pane', () => {
     for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
       const ui = await $.ui.mount({ ...PANE, surface })
       expect(await texts(ui)).toContain('Cache key')
-      expect((await ui.find({ key: 'note' })) === undefined).toBe(surface === 'mobile')
+      expect((await ui.find({ key: 'note-0' })) === undefined).toBe(surface === 'mobile')
       expect((await ui.find({ key: 'key-w' })) === undefined).toBe(surface === 'mobile')
       await ui.unmount()
     }
