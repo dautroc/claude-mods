@@ -1,5 +1,6 @@
 {
   "name": "reply-style",
   "version": "0.1.0",
-  "description": "Draws Claude's replies and slash-command output in the terminal in Claude's theme colours: headings, lists, task lists, quotes and alerts, boxed tables, coloured numbers and paths, and a copy button on each code block and on each message Claude drafts for you to paste elsewhere"
+  "description": "Draws Claude's replies and slash-command output in the terminal in Claude's theme colours: headings, lists, task lists, quotes and alerts, boxed tables, coloured numbers and paths, and a copy button on each code block and on each message Claude drafts for you to paste elsewhere",
+  "types": "./types/index.d.ts"
 }

@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On, PromptComposeTrait, RenderSurface } from 'claude-code'
+import type { On, PromptComposeTrait, PromptEditInput, PromptEditResult, RenderSurface } from 'claude-code'
 
+import { hint } from '../hooks/flash'
 import { inline, parse, widthOf, wrap } from '../hooks/markdown'
 
 // What the engine draws for a row when the mod passes.
@@ -386,6 +387,134 @@ describe('text to copy on the terminal', () => {
     expect(await ui.find({ type: 'Text', text: 'text' })).toBeDefined()
     await ui.press({ key: 'copy-0' })
     expect(seen.toasts).toEqual(['Copied the text.'])
+    await ui.unmount()
+  })
+})
+
+describe('/flash-copy', () => {
+  const draft = 'Two:\n\n```sh\nmake test\n```\n\n```copy Slack reply to Hana\nHi Hana, done.\n```'
+  const onScreen = { first: 0, last: 9, of: 10 }
+
+  function flash($: Engine, isFullscreen = true) {
+    return $.command.run({
+      command: 'flash-copy',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen, columns: 120 },
+    })
+  }
+
+  // The engine's editor beneath the mod: the box with the splice applied.
+  function editor(on: On) {
+    on('prompt.edit', (_, e) => ({
+      text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end),
+      cursor: e.start + e.inputText.length,
+    }))
+  }
+
+  // The kit's types leave `prompt.edit` off `$`, as only the editor raises
+  // it; the test engine raises it all the same.
+  function type($: Engine, inputText: string) {
+    const prompt = $.prompt as unknown as { edit: (e: PromptEditInput) => Promise<PromptEditResult> }
+
+    return prompt.edit({ origin: { kind: 'composer' }, text: '', cursor: 0, start: 0, end: 0, inputText })
+  }
+
+  function row($: Engine, requestId: string, text: string, shown: typeof onScreen | null = onScreen) {
+    return $.ui.mount({
+      plugin: 'reply-style',
+      surface: 'terminal',
+      component: 'AssistantMessage',
+      requestId,
+      props: { text, isFirstOfReply: true, onScreen: shown },
+      viewport: { columns: 100, rows: 40 },
+    })
+  }
+
+  test('gives the newest row’s last button a, then works up the screen', () => {
+    const code = { kind: 'code', lang: 'sh', source: 'make test' } as const
+    const copy = { kind: 'copy', label: 'Slack', text: 'Hi' } as const
+    const { letters, targets } = hint(
+      new Map([
+        ['old', { order: 0, blocks: [code, copy] }],
+        ['new', { order: 1, blocks: [code] }],
+      ]),
+    )
+    expect(letters).toEqual({ new: ['a'], old: ['d', 's'] })
+    expect([...targets.keys()]).toEqual(['a', 's', 'd'])
+    expect(targets.get('s')).toEqual(copy)
+  })
+
+  test('shows a letter before each copy button on screen, and its key copies that block', async ($, on) => {
+    engine(on)
+    editor(on)
+    const seen = clipboard(on)
+    const old = await row($, 'r1', draft)
+    const fresh = await row($, 'r2', '```ts\nconst a = 1\n```')
+    await old.drawn()
+    await fresh.drawn()
+
+    expect(await flash($)).toEqual({})
+    expect(rows(await old.drawn())).toEqual(['⏺', 'Two:', ' d ', 'sh', ' s ', 'Slack reply to Hana', 'Hi Hana, done.'])
+    expect(rows(await fresh.drawn())).toEqual(['⏺', ' a ', 'ts'])
+
+    expect(await type($, 's')).toEqual({ text: '', cursor: 0 })
+    expect(seen.copies).toEqual(['Hi Hana, done.'])
+    expect(seen.toasts).toEqual(['Copied “Slack reply to Hana”.'])
+    expect(rows(await old.drawn())).toEqual(['⏺', 'Two:', 'sh', 'Slack reply to Hana', 'Hi Hana, done.'])
+    await old.unmount()
+    await fresh.unmount()
+  })
+
+  test('takes the hints down on any other key, which lands as typed', async ($, on) => {
+    engine(on)
+    editor(on)
+    const seen = clipboard(on)
+    const ui = await row($, 'r1', draft)
+    await ui.drawn()
+    await flash($)
+
+    expect(await type($, 'x')).toEqual({ text: 'x', cursor: 1 })
+    expect(await type($, 's')).toEqual({ text: 's', cursor: 1 })
+    expect(seen.copies).toEqual([])
+    expect(rows(await ui.drawn())).not.toContain(' s ')
+    await ui.unmount()
+  })
+
+  test('takes the hints down when run again', async ($, on) => {
+    engine(on)
+    editor(on)
+    const ui = await row($, 'r1', draft)
+    await ui.drawn()
+    await flash($)
+    await flash($)
+
+    expect(rows(await ui.drawn())).not.toContain(' s ')
+    expect(await type($, 's')).toEqual({ text: 's', cursor: 1 })
+    await ui.unmount()
+  })
+
+  test('leaves out a row scrolled off screen', async ($, on) => {
+    engine(on)
+    const seen = clipboard(on)
+    const ui = await row($, 'r1', draft, null)
+    await ui.drawn()
+    await flash($)
+
+    expect(seen.toasts).toEqual(['No code block or draft on screen to copy.'])
+    await ui.unmount()
+  })
+
+  test('says it needs fullscreen outside it, and shows none', async ($, on) => {
+    engine(on)
+    editor(on)
+    const seen = clipboard(on)
+    const ui = await row($, 'r1', draft)
+    await ui.drawn()
+    await flash($, false)
+
+    expect(seen.toasts).toEqual(['Copy hints need the fullscreen layout. /reply-style copy [code|draft] works in any.'])
+    expect(await type($, 's')).toEqual({ text: 's', cursor: 1 })
     await ui.unmount()
   })
 })

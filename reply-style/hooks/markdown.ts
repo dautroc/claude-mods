@@ -18,6 +18,9 @@ export type Block =
   | { kind: 'quote'; alert?: Alert; blocks: Block[] }
   | { kind: 'list'; start?: number; items: Item[] }
 
+// A block with a copy button: code, or text to paste elsewhere.
+export type Copyable = Extract<Block, { kind: 'code' | 'copy' }>
+
 // A stretch of inline text in one style: `href` marks a link and `code`
 // inline code; `number` and `path` are found in the plain text between them.
 export type Run = {
@@ -139,6 +142,20 @@ function blocks(lines: string[], breaks: Breaks): Block[] {
   }
 
   return out
+}
+
+// The blocks with a copy button, in the order they are drawn, inside lists
+// and quotes too.
+export function copyables(blocks: Block[]): Copyable[] {
+  return blocks.flatMap(block =>
+    block.kind === 'code' || block.kind === 'copy'
+      ? [block]
+      : block.kind === 'quote'
+        ? copyables(block.blocks)
+        : block.kind === 'list'
+          ? copyables(block.items.flatMap(item => item.blocks))
+          : [],
+  )
 }
 
 function startsBlock(lines: string[], i: number): boolean {

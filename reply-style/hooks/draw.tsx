@@ -1,6 +1,6 @@
 import type { Color, ElementTable, RenderElement } from 'claude-code'
 
-import { type Alert, type Block, type Run, inline, widthOf, wrap } from './markdown'
+import { type Alert, type Block, type Copyable, type Run, inline, widthOf, wrap } from './markdown'
 
 // Theme keys, so every colour follows the person's /theme, light or dark.
 // Numbers and paths take keys no theme here shares with the accent: the
@@ -14,6 +14,7 @@ const COLOR = {
   frame: 'inactive', // table borders, rules, a code block's language
   bar: 'subtle', // the bar beside a quote
   draft: 'suggestion', // the bar beside text to copy, not prompt-style's orange
+  hint: 'claude', // a copy hint's letter, behind it
   done: 'success', // a done task's tick
 } as const satisfies Record<string, Color>
 
@@ -29,11 +30,44 @@ const BULLETS = ['•', '◦', '▪']
 
 export type Draw = {
   el: ElementTable<'terminal'>
-  // Copies a block's text when its button is pressed; `what` names it in
-  // the toast that says so.
-  copy: (text: string, what: string) => void
+  // Copies a block when its button is pressed.
+  copy: (block: Copyable) => void
   // The code and copy blocks drawn so far, which keys each one's button.
   codes: number
+  // The letter shown before each button while /flash-copy's hints are up,
+  // by the button's number; '' or none for a button without one.
+  hints: readonly string[]
+}
+
+// What a block's button copies, and how the toast that says so names it.
+export function copyOf(block: Copyable): { text: string; what: string } {
+  return block.kind === 'code'
+    ? { text: block.source, what: 'the code block' }
+    : { text: block.text, what: block.label ? `“${block.label}”` : 'the text' }
+}
+
+// The head of a block with a copy button: its hint while hints are up, its
+// name, the button.
+function drawHead(d: Draw, block: Copyable, name: RenderElement): RenderElement {
+  const { Box, Button, Text } = d.el
+  const n = d.codes++
+  const hint = d.hints[n]
+
+  return (
+    <Box flexDirection="row" columnGap={2}>
+      {[
+        ...(hint
+          ? [
+              <Text bold color="inverseText" backgroundColor={COLOR.hint}>
+                {` ${hint} `}
+              </Text>,
+            ]
+          : []),
+        name,
+        <Button key={`copy-${n}`} label="copy" dimColor onPress={() => d.copy(block)} />,
+      ]}
+    </Box>
+  )
 }
 
 // Where a block sits: the columns it has, how deep in lists, and the style
@@ -53,7 +87,7 @@ export function drawBlocks(d: Draw, blocks: Block[], place: Place, gap: 0 | 1 = 
 }
 
 function drawBlock(d: Draw, block: Block, place: Place): RenderElement {
-  const { Box, Button, Code, Text } = d.el
+  const { Box, Code, Text } = d.el
   switch (block.kind) {
     case 'paragraph':
       return <Text>{drawRuns(d, inline(block.text), place)}</Text>
@@ -76,47 +110,33 @@ function drawBlock(d: Draw, block: Block, place: Place): RenderElement {
     case 'rule':
       return <Text color={COLOR.frame}>{'─'.repeat(Math.max(1, place.columns))}</Text>
 
-    case 'code': {
-      const key = `copy-${d.codes++}`
-      const source = block.source
-
-      // No frame round the code, so selecting it copies the code alone. The
-      // button sits by the language, not across a wide terminal from it.
+    // No frame round the code, so selecting it copies the code alone. The
+    // button sits by the language, not across a wide terminal from it.
+    case 'code':
       return (
         <Box flexDirection="column">
-          <Box flexDirection="row" columnGap={2}>
-            <Text color={COLOR.frame}>{block.lang || 'text'}</Text>
-            <Button key={key} label="copy" dimColor onPress={() => d.copy(source, 'the code block')} />
-          </Box>
+          {drawHead(d, block, <Text color={COLOR.frame}>{block.lang || 'text'}</Text>)}
           <Box paddingLeft={2}>
-            <Code source={source} {...(block.lang ? { language: block.lang } : {})} />
+            <Code source={block.source} {...(block.lang ? { language: block.lang } : {})} />
           </Box>
         </Box>
       )
-    }
 
     // Drawn as written, not read as markdown: what shows is what pastes.
-    case 'copy': {
-      const key = `copy-${d.codes++}`
-      const { label, text } = block
-
+    case 'copy':
       return (
         <Box flexDirection="column">
-          <Box flexDirection="row" columnGap={2}>
-            <Text bold>{label || 'text'}</Text>
-            <Button key={key} label="copy" dimColor onPress={() => d.copy(text, label ? `“${label}”` : 'the text')} />
-          </Box>
+          {drawHead(d, block, <Text bold>{block.label || 'text'}</Text>)}
           <Box flexDirection="row">
             <Box width={1} flexShrink={0} backgroundColor={COLOR.draft} />
             <Box flexDirection="column" flexGrow={1} flexShrink={1} paddingLeft={1}>
-              {text.split('\n').map(line => (
+              {block.text.split('\n').map(line => (
                 <Text>{line || ' '}</Text>
               ))}
             </Box>
           </Box>
         </Box>
       )
-    }
 
     case 'quote': {
       if (block.alert !== undefined) {
