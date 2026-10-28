@@ -1,0 +1,5 @@
+{
+  "name": "reply-style",
+  "version": "0.1.0",
+  "description": "Draws Claude's replies and slash-command output in the terminal in Claude's theme colours: headings, lists, task lists, quotes and alerts, boxed tables, code blocks with a copy button, coloured numbers and paths"
+}

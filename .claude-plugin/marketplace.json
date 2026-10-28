@@ -38,6 +38,11 @@
       "name": "paste-thumbnails",
       "source": "./paste-thumbnails",
       "description": "Shows a thumbnail of each image pasted into the prompt box in the band above it, labelled with its [Image #N] tag"
+    },
+    {
+      "name": "reply-style",
+      "source": "./reply-style",
+      "description": "Draws Claude's replies and slash-command output in the terminal in Claude's theme colours: headings, lists, task lists, quotes and alerts, boxed tables, code blocks with a copy button, coloured numbers and paths"
     }
   ]
 }
