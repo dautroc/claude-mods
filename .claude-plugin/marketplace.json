@@ -43,6 +43,11 @@
       "name": "reply-style",
       "source": "./reply-style",
       "description": "Draws Claude's replies and slash-command output in the terminal in Claude's theme colours: headings, lists, task lists, quotes and alerts, boxed tables, coloured numbers and paths, and a copy button on each code block and on each message Claude drafts for you to paste elsewhere"
+    },
+    {
+      "name": "walkthrough",
+      "source": "./walkthrough",
+      "description": "Steps through the items Claude hands you to decide, one at a time in a pane, with its recommendation, the choices and a diagram or table beside each, then sends your answers back in one message"
     }
   ]
 }
