@@ -13,6 +13,7 @@ const COLOR = {
   path: 'success',
   frame: 'inactive', // table borders, rules, a code block's language
   bar: 'subtle', // the bar beside a quote
+  draft: 'suggestion', // the bar beside text to copy, not prompt-style's orange
   done: 'success', // a done task's tick
 } as const satisfies Record<string, Color>
 
@@ -28,9 +29,10 @@ const BULLETS = ['•', '◦', '▪']
 
 export type Draw = {
   el: ElementTable<'terminal'>
-  // Copies a code block's source when its button is pressed.
-  copy: (source: string) => void
-  // The code blocks drawn so far, which keys each one's button.
+  // Copies a block's text when its button is pressed; `what` names it in
+  // the toast that says so.
+  copy: (text: string, what: string) => void
+  // The code and copy blocks drawn so far, which keys each one's button.
   codes: number
 }
 
@@ -84,10 +86,33 @@ function drawBlock(d: Draw, block: Block, place: Place): RenderElement {
         <Box flexDirection="column">
           <Box flexDirection="row" columnGap={2}>
             <Text color={COLOR.frame}>{block.lang || 'text'}</Text>
-            <Button key={key} label="copy" dimColor onPress={() => d.copy(source)} />
+            <Button key={key} label="copy" dimColor onPress={() => d.copy(source, 'the code block')} />
           </Box>
           <Box paddingLeft={2}>
             <Code source={source} {...(block.lang ? { language: block.lang } : {})} />
+          </Box>
+        </Box>
+      )
+    }
+
+    // Drawn as written, not read as markdown: what shows is what pastes.
+    case 'copy': {
+      const key = `copy-${d.codes++}`
+      const { label, text } = block
+
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="row" columnGap={2}>
+            <Text bold>{label || 'text'}</Text>
+            <Button key={key} label="copy" dimColor onPress={() => d.copy(text, label ? `“${label}”` : 'the text')} />
+          </Box>
+          <Box flexDirection="row">
+            <Box width={1} flexShrink={0} backgroundColor={COLOR.draft} />
+            <Box flexDirection="column" flexGrow={1} flexShrink={1} paddingLeft={1}>
+              {text.split('\n').map(line => (
+                <Text>{line || ' '}</Text>
+              ))}
+            </Box>
           </Box>
         </Box>
       )

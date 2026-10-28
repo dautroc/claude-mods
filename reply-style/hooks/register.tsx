@@ -1,5 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 
+import { COPY_RULE } from './copy'
 import { type Draw, drawBlocks } from './draw'
 import { type Block, type Breaks, inline, parse } from './markdown'
 
@@ -51,7 +52,7 @@ function lastCode(blocks: Block[]): string | undefined {
 
 async function copy($: EngineInterface, text: string, what: string): Promise<void> {
   const copied = await $.ui.copy({ text, surface: 'terminal' })
-  $.ui.toast(copied.isCopied ? `Copied the ${what}.` : `Couldn't copy the ${what} (${copied.reason}).`)
+  $.ui.toast(copied.isCopied ? `Copied ${what}.` : `Couldn't copy ${what} (${copied.reason}).`)
 }
 
 export const register: Register = on => {
@@ -65,7 +66,7 @@ export const register: Register = on => {
 
     const el = $.ui.resolve(e)
     const { Box, Text } = el
-    const d: Draw = { el, codes: 0, copy: source => void copy($, source, 'code block') }
+    const d: Draw = { el, codes: 0, copy: (text, what) => void copy($, text, what) }
     const columns = (e.viewport?.columns ?? COLUMNS) - 2
 
     return (
@@ -87,7 +88,7 @@ export const register: Register = on => {
 
     const el = $.ui.resolve(e)
     const { Box, Text } = el
-    const d: Draw = { el, codes: 0, copy: source => void copy($, source, 'code block') }
+    const d: Draw = { el, codes: 0, copy: (text, what) => void copy($, text, what) }
     const columns = (e.viewport?.columns ?? COLUMNS) - 5
 
     return (
@@ -100,6 +101,15 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
+  })
+
+  // Teaches the model to put text the person pastes elsewhere in a `copy`
+  // block. Not under -p, where nothing draws and a script reads the reply.
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+    if (e.surfaces.length === 0 || e.traits.includes('print') || e.traits.includes('bare')) return composed
+
+    return { sections: [...composed.sections, { id: 'reply-style:copy', text: COPY_RULE, scope: 'session' }] }
   })
 
   on('session.start', async ($, e, next) => {
@@ -129,14 +139,14 @@ export const register: Register = on => {
       return {}
     }
     if (what === undefined) {
-      await copy($, reply.text, 'last reply')
+      await copy($, reply.text, 'the last reply')
 
       return {}
     }
 
     const code = lastCode(parse(reply.text))
     if (code === undefined) $.ui.toast('The last reply has no code block.')
-    else await copy($, code, 'last code block')
+    else await copy($, code, 'the last code block')
 
     return {}
   })

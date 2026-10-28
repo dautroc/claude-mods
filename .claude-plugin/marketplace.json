@@ -42,7 +42,7 @@
     {
       "name": "reply-style",
       "source": "./reply-style",
-      "description": "Draws Claude's replies and slash-command output in the terminal in Claude's theme colours: headings, lists, task lists, quotes and alerts, boxed tables, code blocks with a copy button, coloured numbers and paths"
+      "description": "Draws Claude's replies and slash-command output in the terminal in Claude's theme colours: headings, lists, task lists, quotes and alerts, boxed tables, coloured numbers and paths, and a copy button on each code block and on each message Claude drafts for you to paste elsewhere"
     }
   ]
 }

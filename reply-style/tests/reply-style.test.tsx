@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { On, PromptComposeTrait, RenderSurface } from 'claude-code'
 
 import { inline, parse, widthOf, wrap } from '../hooks/markdown'
 
@@ -94,6 +94,22 @@ describe('reading markdown', () => {
       { kind: 'paragraph', text: 'Run:' },
       { kind: 'code', lang: 'bash', source: 'make test' },
     ])
+  })
+
+  test('reads a copy fence as text to copy, under its label', () => {
+    expect(parse('Draft:\n\n```copy Slack reply to Hana\nHi *Hana*,\n\n  done.\n```\n\n```copy\nplain\n```')).toEqual([
+      { kind: 'paragraph', text: 'Draft:' },
+      { kind: 'copy', label: 'Slack reply to Hana', text: 'Hi *Hana*,\n\n  done.' },
+      { kind: 'copy', label: '', text: 'plain' },
+    ])
+  })
+
+  test('keeps a fence inside a copy fence opened with more backticks or tildes', () => {
+    const inner = 'Run:\n```sh\nmake test\n```'
+    expect(parse(`\`\`\`\`copy PR comment\n${inner}\n\`\`\`\``)).toEqual([
+      { kind: 'copy', label: 'PR comment', text: inner },
+    ])
+    expect(parse(`~~~copy PR comment\n${inner}\n~~~`)).toEqual([{ kind: 'copy', label: 'PR comment', text: inner }])
   })
 
   test('nests a list under an ordered item indented less than its text', () => {
@@ -335,6 +351,78 @@ describe('a reply on the terminal', () => {
     expect(seen.toasts).toEqual(['Copied the code block.'])
     await ui.unmount()
   })
+})
+
+describe('text to copy on the terminal', () => {
+  const draft = 'Here it is:\n\n```ts\nconst a = 1\n```\n\n```copy Slack reply to Hana\nHi **Hana**,\n\nthe deploy is done.\n```'
+
+  test('draws the text as written under its label and a copy button', async ($, on) => {
+    engine(on)
+    expect(await lines($, draft)).toEqual([
+      '⏺',
+      'Here it is:',
+      'ts',
+      'Slack reply to Hana',
+      'Hi **Hana**,',
+      ' ',
+      'the deploy is done.',
+    ])
+  })
+
+  test('copies exactly the text from its button, counted with the code blocks', async ($, on) => {
+    engine(on)
+    const seen = clipboard(on)
+    const ui = await $.ui.mount({ ...reply(draft), surface: 'terminal' })
+    await ui.press({ key: 'copy-1' })
+    expect(seen.copies).toEqual(['Hi **Hana**,\n\nthe deploy is done.'])
+    expect(seen.toasts).toEqual(['Copied “Slack reply to Hana”.'])
+    await ui.unmount()
+  })
+
+  test('labels text with no label as text', async ($, on) => {
+    engine(on)
+    const seen = clipboard(on)
+    const ui = await $.ui.mount({ ...reply('```copy\nplain\n```'), surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: 'text' })).toBeDefined()
+    await ui.press({ key: 'copy-0' })
+    expect(seen.toasts).toEqual(['Copied the text.'])
+    await ui.unmount()
+  })
+})
+
+describe('the rule that teaches the model the copy fence', () => {
+  // The engine's own sections, beneath the mod.
+  function sections(on: On) {
+    on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude.', scope: 'shared' }] }))
+  }
+
+  function facts(surfaces: RenderSurface[], traits: PromptComposeTrait[]) {
+    const model = 'claude-haiku-5-5'
+
+    return { model, promptModel: model, surfaces, tools: [], outputStyle: null, traits }
+  }
+
+  test('goes last in the system prompt of a session that draws', async ($, on) => {
+    sections(on)
+    const { sections: out } = await $.prompt.compose(facts(['terminal'], []))
+    expect(out.map(section => [section.id, section.scope])).toEqual([
+      ['intro', 'shared'],
+      ['reply-style:copy', 'session'],
+    ])
+    expect(out[1]!.text).toContain('```copy Slack reply to Hana')
+  })
+
+  for (const [name, surfaces, traits] of [
+    ['under -p', [], ['print']],
+    ['with nothing drawing', [], []],
+    ['under --bare', ['terminal'], ['bare']],
+  ] as const) {
+    test(`is left out ${name}`, async ($, on) => {
+      sections(on)
+      const { sections: out } = await $.prompt.compose(facts([...surfaces], [...traits]))
+      expect(out.map(section => section.id)).toEqual(['intro'])
+    })
+  }
 })
 
 describe('what the mod leaves to the engine', () => {

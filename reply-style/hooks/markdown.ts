@@ -12,6 +12,7 @@ export type Block =
   | { kind: 'heading'; level: number; text: string }
   | { kind: 'paragraph'; text: string }
   | { kind: 'code'; lang: string; source: string }
+  | { kind: 'copy'; label: string; text: string }
   | { kind: 'rule' }
   | { kind: 'table'; head: string[]; align: Align[]; rows: string[][] }
   | { kind: 'quote'; alert?: Alert; blocks: Block[] }
@@ -34,7 +35,7 @@ export type Run = {
 // in a command's output, whose lines are often laid out by hand.
 export type Breaks = 'space' | 'line'
 
-const FENCE = /^( {0,3})(`{3,}|~{3,})[ \t]*([^\s`]*)[^`]*$/
+const FENCE = /^( {0,3})(`{3,}|~{3,})[ \t]*([^\s`]*)([^`]*)$/
 const HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/
 const RULE = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/
 const QUOTE = /^ {0,3}> ?(.*)$/
@@ -68,14 +69,20 @@ function blocks(lines: string[], breaks: Breaks): Block[] {
 
     const fence = FENCE.exec(line)
     if (fence) {
-      const [, indent, mark, lang] = fence as unknown as [string, string, string, string]
+      const [, indent, mark, lang, rest] = fence as unknown as [string, string, string, string, string]
       const close = new RegExp(`^ {0,3}${mark[0] === '`' ? '`' : '~'}{${mark.length},}[ \\t]*$`)
       const body: string[] = []
       for (i++; i < lines.length && !close.test(lines[i]!); i++) {
         body.push(lines[i]!.replace(new RegExp(`^ {0,${indent.length}}`), ''))
       }
       i++
-      out.push({ kind: 'code', lang, source: body.join('\n') })
+      // `copy` and a label mark text the person pastes elsewhere, such as
+      // a message drafted for them (the rule in `copy.ts`).
+      out.push(
+        lang.toLowerCase() === 'copy'
+          ? { kind: 'copy', label: rest.trim(), text: body.join('\n') }
+          : { kind: 'code', lang, source: body.join('\n') },
+      )
       continue
     }
 
