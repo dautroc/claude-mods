@@ -1,9 +1,10 @@
 # claude-mods
 
-Ten mods for the Claude Code terminal app. They add what it doesn't ship: a button that rewrites a vague
+Eleven mods for the Claude Code terminal app. They add what it doesn't ship: a button that rewrites a vague
 prompt before you send it, side questions in a pane that stay out of the conversation, a task board and an
 idea shelf for each project, a pane that walks you through Claude's questions one at a time, replies drawn
-in your theme's colours with copy buttons, and a `/restart` that works with Remote Control on.
+in your theme's colours with copy buttons, a search that scrolls the chat back to a prompt you typed, and a
+`/restart` that works with Remote Control on.
 
 ![A Claude reply drawn by reply-style: an orange bar beside the prompt, a heading, a boxed table, a code block and a Slack draft, each with a copy button, and a Tip alert](docs/media/reply-style.png)
 
@@ -41,6 +42,7 @@ clicks, and `ctrl+x y` works only there. Turn it on with `"tui": "fullscreen"` i
 | [reply-style](#reply-style-replies-in-your-themes-colours) | Replies in your theme's colours, boxed tables, copy buttons | `/reply-style copy`, `ctrl+x y` |
 | [prompt-style](#prompt-style-your-prompts-beside-a-bar) | Your prompts beside an orange bar instead of a grey band | Always on |
 | [paste-thumbnails](#paste-thumbnails-see-the-images-you-paste) | A thumbnail of each pasted image above the prompt box | Paste an image |
+| [prompt-jump](#prompt-jump-jump-back-to-a-prompt-you-typed) | A ctrl+r-style search of your prompts that scrolls the chat to the one you pick | `/jump` |
 | [transcript](#transcript-read-the-chat-in-nvim) | The chat as Markdown in nvim, to read and search | `/transcript` |
 | [restart](#restart-restart-claude-code-in-place) | `/restart` that reloads your shell setup and keeps Remote Control | `/restart` |
 
@@ -157,6 +159,18 @@ Elsewhere the thumbnail shows the image's size instead.
 
 The mod reads the file Claude Code saves when you paste, which is not part of the plugin API, so a Claude
 Code release may break it.
+
+## prompt-jump: jump back to a prompt you typed
+
+`/jump` opens a search over the prompts you typed in this chat, newest first, like `ctrl+r` for this
+session. Type to narrow the list: a prompt matches when it holds every word you typed. Enter jumps to the
+newest match, or press ↓ to pick another (or its number); the pane closes and the chat scrolls so that
+prompt heads the screen. Esc closes it without moving. Bind it to a key with `"ctrl+x r": "command:jump"`
+to open it from the prompt box.
+
+It needs the fullscreen layout, where the chat scrolls. Prompts from before a compaction are listed only
+while the chat still shows them. The mod finds each prompt's row in the session's transcript file, which
+is not part of the plugin API, so a Claude Code release may break it.
 
 ## transcript: read the chat in nvim
 

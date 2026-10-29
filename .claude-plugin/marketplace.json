@@ -53,6 +53,11 @@
       "name": "restart",
       "source": "./restart",
       "description": "Makes /restart start Claude Code again from a fresh login shell and resume this session, so changed settings, shell environment and a new Claude Code version take effect, with Remote Control on too"
+    },
+    {
+      "name": "prompt-jump",
+      "source": "./prompt-jump",
+      "description": "Searches the prompts you typed in this chat, like ctrl+r, and scrolls the chat to the one you pick"
     }
   ]
 }
