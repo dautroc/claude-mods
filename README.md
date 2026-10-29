@@ -140,11 +140,15 @@ The desktop, VS Code and mobile apps keep their own drawing, and show a draft as
 
 ## prompt-style: your prompts beside a bar
 
-Each prompt you type sits beside a thin orange bar instead of on a full-width grey band, as at the top of
-the screenshot above. A slash command's line and a prompt a mod sends, such as prompt-enhancer's Send,
-keep the band: Claude Code doesn't let a mod redraw those rows.
+![Two prompts in the transcript, each beside a thin orange bar, with Claude's replies below them](docs/media/prompt-style.png)
+
+Each prompt you type sits beside a thin orange bar instead of on a full-width grey band. A slash command's
+line and a prompt a mod sends, such as prompt-enhancer's Send, keep the band: Claude Code doesn't let a mod
+redraw those rows.
 
 ## paste-thumbnails: see the images you paste
+
+![Pasting a screenshot into a prompt: the box shows [Image #1] and a thumbnail labelled #1 appears in the band above it](docs/media/paste-thumbnails.gif)
 
 Paste an image into the prompt box and a thumbnail appears in the band above it, labelled with the number
 of its `[Image #N]` tag; it goes when the tag leaves the box. It needs a terminal Claude Code draws images
@@ -156,6 +160,8 @@ Code release may break it.
 
 ## transcript: read the chat in nvim
 
+![The chat as Markdown in nvim: a heading for each prompt and reply, each tool call on one line, the cursor on the newest prompt](docs/media/transcript.png)
+
 `/transcript` writes the chat as Markdown, with a heading for each of your prompts, Claude's replies, and
 each tool call as one line, then opens it in your editor in an enlarged Mado float at your newest prompt.
 It works mid-turn; bind it to a key with `"ctrl+x e": "command:transcript"` if you use it often. Outside
@@ -163,6 +169,8 @@ Mado it writes the file to `$TMPDIR/claude-transcripts/` and tells you where. Tu
 compaction show as the summary that replaced them.
 
 ## restart: restart Claude Code in place
+
+![Running /restart: Claude Code exits, a command typed into the shell starts it again, and the same conversation comes back](docs/media/restart.gif)
 
 `/restart` (or `/update`) ends Claude Code and starts it again in the same terminal pane, from a login
 shell that reads your shell's startup files again, and resumes the same session with the flags you started
