@@ -1,0 +1,5 @@
+{
+  "name": "restart",
+  "version": "0.1.0",
+  "description": "Makes /restart start Claude Code again from a fresh login shell and resume this session, so changed settings, shell environment and a new Claude Code version take effect, with Remote Control on too"
+}

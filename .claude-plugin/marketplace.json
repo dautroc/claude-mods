@@ -48,6 +48,11 @@
       "name": "walkthrough",
       "source": "./walkthrough",
       "description": "Steps through the items Claude hands you to decide, one at a time in a pane, with its recommendation, the choices and a diagram or table beside each, then sends your answers back in one message"
+    },
+    {
+      "name": "restart",
+      "source": "./restart",
+      "description": "Makes /restart start Claude Code again from a fresh login shell and resume this session, so changed settings, shell environment and a new Claude Code version take effect, with Remote Control on too"
     }
   ]
 }
