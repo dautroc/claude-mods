@@ -188,5 +188,4 @@ Claude Code reads an installed mod from this folder, not from a copy, so after y
 
 - `make test` validates the marketplace and each mod, then runs each mod's tests.
 - [AGENTS.md](AGENTS.md) explains how each mod works and which behaviour a spike confirmed.
-- [CHANGELOG.md](CHANGELOG.md) lists what changed in each mod.
 - To write a new mod, use the plugin-authoring skill, then follow "To add a mod" in AGENTS.md.
