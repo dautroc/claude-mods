@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { LIMIT, inConversation, matching, parsePrompts, snippet, timeOf } from '../hooks/prompts'
+import { LIMIT, REPLY, TYPED, inConversation, lastReply, matching, parsePrompts, snippet, timeOf } from '../hooks/prompts'
 import type { Prompt } from '../types'
 
 const SESSION = '5e551011-0000-4000-8000-000000000001'
@@ -151,11 +151,47 @@ describe('matching', () => {
   })
 })
 
+// A transcript row of one block of Claude's reply.
+function replied(uuid: string, block: object, extra: object = {}): string {
+  return JSON.stringify({
+    parentUuid: null,
+    isSidechain: false,
+    message: { model: 'claude-opus-5-5', id: 'msg_1', type: 'message', role: 'assistant', content: [block] },
+    type: 'assistant',
+    uuid,
+    timestamp: '2026-10-29T08:21:00.000Z',
+    ...extra,
+  })
+}
+
+// What grep hands the mod for REPLY: Claude's text rows, newest last, then
+// rows written as Claude's that Claude didn't write.
+const REPLIES = [
+  replied('a1', { type: 'text', text: 'Checking the rounding first.' }),
+  replied('a2', { type: 'text', text: 'Fixed: totals now round half up.' }),
+  replied('a3', { type: 'text', text: 'a subagent reply' }, { isSidechain: true }),
+  replied('a4', { type: 'text', text: 'API Error: 529 overloaded' }, { isApiErrorMessage: true }),
+  replied('a5', { type: 'text', text: 'No response requested.' }, { message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'No response requested.' }] } }),
+  replied('a6', { type: 'text', text: '   ' }),
+  '{"parentUuid":null,"isSidechain":false,"message":{"model":"claude',
+]
+
+describe("Claude's last reply", () => {
+  test('is the newest text row Claude wrote in the main conversation', () => {
+    expect(lastReply(REPLIES.join('\n'))).toBe('a2')
+  })
+
+  test('is undefined before Claude has written any text', () => {
+    expect(lastReply('')).toBeUndefined()
+    expect(lastReply(REPLIES.slice(2).join('\n'))).toBeUndefined()
+  })
+})
+
 // Stands for the engine: a session in /work/shop whose transcript file is
-// FILE (or under `folder` when given), grep answering `stdout`, and a record
-// of the panes, closes and toasts. The kit has no transcript to scroll, so
-// $.ui.scroll on a prompt's row is refused, and the toast that says so names
-// the prompt the jump was for.
+// FILE (or under `folder` when given), grep answering `stdout` (LINES for
+// TYPED, REPLIES for REPLY), and a record of the panes, closes and toasts.
+// The kit has no transcript to scroll, so $.ui.scroll on a row is refused,
+// and the toast that says so names the row the jump was for.
 function engine(on: On, options: { stdout?: string; exitCode?: number; rows?: ReturnType<typeof said>[]; folder?: string } = {}) {
   const file = options.folder === undefined ? FILE : `/home/me/.claude/projects/${options.folder}/${SESSION}.jsonl`
   const seen = {
@@ -187,7 +223,7 @@ function engine(on: On, options: { stdout?: string; exitCode?: number; rows?: Re
     return {
       value: {
         exitCode: options.exitCode ?? 0,
-        stdout: options.stdout ?? `${LINES.join('\n')}\n`,
+        stdout: options.stdout ?? `${(e.argv[2] === REPLY ? REPLIES : LINES).join('\n')}\n`,
         stderr: options.exitCode === 2 ? 'grep: Permission denied' : '',
         isStdoutTruncated: false,
         isStderrTruncated: false,
@@ -213,11 +249,11 @@ function engine(on: On, options: { stdout?: string; exitCode?: number; rows?: Re
   return seen
 }
 
-async function jump($: Engine, isFullscreen = true) {
+async function jump($: Engine, isFullscreen = true, command = 'jump') {
   await $.session.start({ cwd: '/work/shop', surface: 'terminal', isInteractive: true })
 
   return $.command.run({
-    command: 'jump',
+    command,
     args: '',
     origin: { kind: 'composer' },
     presentation: { isFullscreen, columns: 160 },
@@ -237,7 +273,7 @@ describe('/jump', () => {
     const ran = await jump($)
 
     expect(ran.text).toBeUndefined()
-    expect(seen.runs).toEqual([['/usr/bin/grep', '-F', '"origin":{"kind":"human"}', FILE]])
+    expect(seen.runs).toEqual([['/usr/bin/grep', '-F', TYPED, FILE]])
     expect(seen.opens).toEqual([
       expect.objectContaining({ id: 'prompt-jump', title: 'Jump to a prompt', focus: true, closeOnEscape: true }),
     ])
@@ -340,5 +376,44 @@ describe('/jump', () => {
 
     expect(seen.toasts).toEqual(["Couldn't read this session's transcript: grep: Permission denied"])
     expect(seen.opens).toEqual([])
+  })
+})
+
+describe('/jump-reply', () => {
+  test("scrolls the chat to the start of Claude's last reply, with no pane", async ($, on) => {
+    const seen = engine(on)
+
+    const ran = await jump($, true, 'jump-reply')
+
+    expect(ran.text).toBeUndefined()
+    expect(seen.runs).toEqual([['/usr/bin/grep', '-F', REPLY, FILE]])
+    expect(seen.opens).toEqual([])
+    expect(seen.toasts).toEqual([expect.stringMatching(/^Couldn't scroll to Claude's last reply: .*ui\.scroll/)])
+  })
+
+  test("before Claude has written any text, says so", async ($, on) => {
+    const seen = engine(on, { rows: [said('user', 'Fix the checkout total rounding')] })
+
+    await jump($, true, 'jump-reply')
+
+    expect(seen.runs).toEqual([])
+    expect(seen.toasts).toEqual(["Claude hasn't replied in this chat yet."])
+  })
+
+  test("says so when grep can't read the transcript", async ($, on) => {
+    const seen = engine(on, { exitCode: 2, stdout: '' })
+
+    await jump($, true, 'jump-reply')
+
+    expect(seen.toasts).toEqual(["Couldn't read this session's transcript: grep: Permission denied"])
+  })
+
+  test('outside the fullscreen layout, says so', async ($, on) => {
+    const seen = engine(on)
+
+    await jump($, false, 'jump-reply')
+
+    expect(seen.toasts).toEqual(["Jumping to Claude's reply needs the fullscreen layout, where the chat scrolls."])
+    expect(seen.runs).toEqual([])
   })
 })

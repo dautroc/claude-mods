@@ -1,6 +1,6 @@
 {
   "name": "prompt-jump",
   "version": "0.1.0",
-  "description": "Searches the prompts you typed in this chat, like ctrl+r, and scrolls the chat to the one you pick",
+  "description": "Searches the prompts you typed in this chat, like ctrl+r, and scrolls the chat to the one you pick, or to the start of Claude's last reply",
   "types": "./types/index.d.ts"
 }

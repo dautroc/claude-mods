@@ -2,7 +2,18 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Prompt } from '../types'
-import { TYPED, inConversation, matching, parsePrompts, plainOf, snippet, timeOf, widthOf } from './prompts'
+import {
+  REPLY,
+  TYPED,
+  inConversation,
+  lastReply,
+  matching,
+  parsePrompts,
+  plainOf,
+  snippet,
+  timeOf,
+  widthOf,
+} from './prompts'
 
 type Engine = EngineInterface
 
@@ -66,21 +77,32 @@ async function transcriptFile($: Engine): Promise<string | undefined> {
   return undefined
 }
 
-// The prompts typed into this chat that it still shows, oldest first, or why
-// they can't be read.
-async function load($: Engine, rows: readonly { role: string; text: string }[]): Promise<Prompt[] | string> {
+// The lines of this session's transcript file that hold `text`, or why they
+// can't be read.
+async function grepTranscript($: Engine, text: string): Promise<{ lines: string } | { error: string }> {
   const path = await transcriptFile($)
   if (path === undefined) {
-    return "Couldn't find this session's transcript file."
+    return { error: "Couldn't find this session's transcript file." }
   }
 
   // grep exits 1 when no line matches.
-  const ran = await $.process.run([GREP, '-F', TYPED, path])
+  const ran = await $.process.run([GREP, '-F', text, path])
   if (ran.exitCode > 1) {
-    return `Couldn't read this session's transcript: ${ran.stderr.trim() || `grep exited with ${ran.exitCode}`}`
+    return { error: `Couldn't read this session's transcript: ${ran.stderr.trim() || `grep exited with ${ran.exitCode}`}` }
   }
 
-  return inConversation(parsePrompts(ran.stdout), rows).map(prompt => ({
+  return { lines: ran.stdout }
+}
+
+// The prompts typed into this chat that it still shows, oldest first, or why
+// they can't be read.
+async function load($: Engine, rows: readonly { role: string; text: string }[]): Promise<Prompt[] | string> {
+  const read = await grepTranscript($, TYPED)
+  if ('error' in read) {
+    return read.error
+  }
+
+  return inConversation(parsePrompts(read.lines), rows).map(prompt => ({
     ...prompt,
     text: plainOf(prompt.text).slice(0, KEPT),
   }))
@@ -105,15 +127,49 @@ async function openSearch($: Engine) {
   await $.ui.open({ id: PANE, title: 'Jump to a prompt', focus: true, closeOnEscape: true })
 }
 
-// Scrolls the chat so the prompt's row heads it. The pane closes first, so
-// the row is placed in the chat at its full width.
+// Scrolls the chat so the row drawn under `id` heads it; answers why not when
+// it didn't move.
+async function scrollTo($: Engine, id: string): Promise<string | undefined> {
+  const moved = await $.ui
+    .scroll({ to: { requestId: id }, block: 'start' })
+    .catch((error: unknown) => ({ deny: error instanceof Error ? error.message : String(error) }))
+
+  return moved.deny
+}
+
+// Scrolls the chat to the prompt's row. The pane closes first, so the row is
+// placed in the chat at its full width.
 async function jump($: Engine, prompt: Prompt) {
   await $.ui.close({ id: PANE })
-  const moved = await $.ui
-    .scroll({ to: { requestId: prompt.id }, block: 'start' })
-    .catch((error: unknown) => ({ deny: error instanceof Error ? error.message : String(error) }))
-  if (moved.deny !== undefined) {
-    $.ui.toast(`Couldn't scroll to prompt #${prompt.number}: ${moved.deny}`)
+  const why = await scrollTo($, prompt.id)
+  if (why !== undefined) {
+    $.ui.toast(`Couldn't scroll to prompt #${prompt.number}: ${why}`)
+  }
+}
+
+// Scrolls the chat to the start of the last text Claude wrote: the answer a
+// turn ended on, after its tool calls.
+async function jumpToReply($: Engine) {
+  const rows = await $.session.messages()
+  const read = rows.some(row => row.role === 'assistant' && row.text.trim() !== '')
+    ? await grepTranscript($, REPLY)
+    : { lines: '' }
+  if ('error' in read) {
+    $.ui.toast(read.error)
+
+    return
+  }
+
+  const id = lastReply(read.lines)
+  if (id === undefined) {
+    $.ui.toast("Claude hasn't replied in this chat yet.")
+
+    return
+  }
+
+  const why = await scrollTo($, id)
+  if (why !== undefined) {
+    $.ui.toast(`Couldn't scroll to Claude's last reply: ${why}`)
   }
 }
 
@@ -146,8 +202,25 @@ export const register: Register = on => {
       description: 'Search the prompts you typed in this chat and scroll the chat to the one you pick',
       immediate: true,
     })
+    await $.command.register({
+      name: 'jump-reply',
+      description: "Scroll the chat to the start of Claude's last reply",
+      immediate: true,
+    })
 
     return next(e)
+  })
+
+  on('command.run', { command: 'jump-reply' }, async ($, e) => {
+    if (!e.presentation.isFullscreen) {
+      $.ui.toast("Jumping to Claude's reply needs the fullscreen layout, where the chat scrolls.")
+
+      return {}
+    }
+
+    await jumpToReply($)
+
+    return {}
   })
 
   on('command.run', { command: 'jump' }, async ($, e) => {

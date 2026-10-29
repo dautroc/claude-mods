@@ -57,7 +57,7 @@
     {
       "name": "prompt-jump",
       "source": "./prompt-jump",
-      "description": "Searches the prompts you typed in this chat, like ctrl+r, and scrolls the chat to the one you pick"
+      "description": "Searches the prompts you typed in this chat, like ctrl+r, and scrolls the chat to the one you pick, or to the start of Claude's last reply"
     }
   ]
 }

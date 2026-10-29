@@ -5,6 +5,10 @@ import type { Prompt } from '../types'
 // that can run past the 4 MiB one read may copy.
 export const TYPED = '"origin":{"kind":"human"}'
 
+// The file stores each block of Claude's reply on a row of its own, and a
+// text block's row holds this.
+export const REPLY = '"role":"assistant","content":[{"type":"text"'
+
 // The conversation reads at most its newest LIMIT rows.
 export const LIMIT = 4096
 
@@ -22,8 +26,9 @@ type Row = {
   isMeta?: unknown
   isSidechain?: unknown
   isCompactSummary?: unknown
+  isApiErrorMessage?: unknown
   origin?: { kind?: unknown }
-  message?: { content?: unknown }
+  message?: { model?: unknown; content?: unknown }
 }
 
 // The row's text blocks joined, or undefined for a row that holds a tool's
@@ -84,6 +89,32 @@ export function parsePrompts(lines: string): Prompt[] {
   }
 
   return prompts
+}
+
+// The id of the newest row of text Claude wrote, from the transcript file's
+// lines that hold REPLY; undefined when there is none. An API error and the
+// engine's own stand-in replies are written as Claude's, but not by Claude.
+export function lastReply(lines: string): string | undefined {
+  for (const line of lines.split('\n').reverse()) {
+    let row: Row
+    try {
+      row = JSON.parse(line) as Row
+    } catch {
+      continue
+    }
+    if (
+      row.type === 'assistant' &&
+      row.isSidechain !== true &&
+      row.isApiErrorMessage !== true &&
+      row.message?.model !== '<synthetic>' &&
+      typeof row.uuid === 'string' &&
+      (textOf(row.message?.content) ?? '').trim() !== ''
+    ) {
+      return row.uuid
+    }
+  }
+
+  return undefined
 }
 
 // What two copies of one prompt's text share, however their blocks were joined.

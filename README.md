@@ -42,7 +42,7 @@ clicks, and `ctrl+x y` works only there. Turn it on with `"tui": "fullscreen"` i
 | [reply-style](#reply-style-replies-in-your-themes-colours) | Replies in your theme's colours, boxed tables, copy buttons | `/reply-style copy`, `ctrl+x y` |
 | [prompt-style](#prompt-style-your-prompts-beside-a-bar) | Your prompts beside an orange bar instead of a grey band | Always on |
 | [paste-thumbnails](#paste-thumbnails-see-the-images-you-paste) | A thumbnail of each pasted image above the prompt box | Paste an image |
-| [prompt-jump](#prompt-jump-jump-back-to-a-prompt-you-typed) | A ctrl+r-style search of your prompts that scrolls the chat to the one you pick | `/jump` |
+| [prompt-jump](#prompt-jump-jump-back-to-a-prompt-you-typed) | A ctrl+r-style search of your prompts that scrolls the chat to the one you pick, and a jump to the start of Claude's last reply | `/jump`, `/jump-reply` |
 | [transcript](#transcript-read-the-chat-in-nvim) | The chat as Markdown in nvim, to read and search | `/transcript` |
 | [restart](#restart-restart-claude-code-in-place) | `/restart` that reloads your shell setup and keeps Remote Control | `/restart` |
 
@@ -168,9 +168,13 @@ newest match, or press ↓ to pick another (or its number); the pane closes and 
 prompt heads the screen. Esc closes it without moving. Bind it to a key with `"ctrl+x r": "command:jump"`
 to open it from the prompt box.
 
-It needs the fullscreen layout, where the chat scrolls. Prompts from before a compaction are listed only
-while the chat still shows them. The mod finds each prompt's row in the session's transcript file, which
-is not part of the plugin API, so a Claude Code release may break it.
+`/jump-reply` scrolls the chat to the start of Claude's last reply: the text it ended on, after any tool
+calls, so a long answer can be read from its top. It opens no pane, so it works with a draft in the box.
+Bind it with `"ctrl+x l": "command:jump-reply"`.
+
+Both need the fullscreen layout, where the chat scrolls. Prompts from before a compaction are listed only
+while the chat still shows them. The mod finds each row in the session's transcript file, which is not
+part of the plugin API, so a Claude Code release may break it.
 
 ## transcript: read the chat in nvim
 
