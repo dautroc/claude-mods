@@ -1,10 +1,10 @@
 # Changelog
 
-All notable changes to claude-mods are recorded here. Each mod is versioned and released on its own, so each has its own section, and a release moves that mod's Unreleased entries under a version heading. The last section covers the repository itself. The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
+All notable changes to claude-mods are recorded here. Each mod is versioned and released on its own, so each has its own section and its own tags (`aside-v0.1.0`); the last section covers the repository itself (`v0.1.0`). A change not yet released goes under an Unreleased heading at the top of its section. The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
 ## prompt-enhancer
 
-### [Unreleased]
+### [0.1.0] - 2026-10-29
 
 #### Added
 
@@ -12,7 +12,7 @@ All notable changes to claude-mods are recorded here. Each mod is versioned and 
 
 ## aside
 
-### [Unreleased]
+### [0.1.0] - 2026-10-29
 
 #### Added
 
@@ -20,7 +20,7 @@ All notable changes to claude-mods are recorded here. Each mod is versioned and 
 
 ## prompt-style
 
-### [Unreleased]
+### [0.1.0] - 2026-10-29
 
 #### Added
 
@@ -28,7 +28,7 @@ All notable changes to claude-mods are recorded here. Each mod is versioned and 
 
 ## transcript
 
-### [Unreleased]
+### [0.1.0] - 2026-10-29
 
 #### Added
 
@@ -36,7 +36,7 @@ All notable changes to claude-mods are recorded here. Each mod is versioned and 
 
 ## idea-shelf
 
-### [Unreleased]
+### [0.1.0] - 2026-10-29
 
 #### Added
 
@@ -44,7 +44,7 @@ All notable changes to claude-mods are recorded here. Each mod is versioned and 
 
 ## task-board
 
-### [Unreleased]
+### [0.1.0] - 2026-10-29
 
 #### Added
 
@@ -52,7 +52,7 @@ All notable changes to claude-mods are recorded here. Each mod is versioned and 
 
 ## paste-thumbnails
 
-### [Unreleased]
+### [0.1.0] - 2026-10-29
 
 #### Added
 
@@ -60,7 +60,7 @@ All notable changes to claude-mods are recorded here. Each mod is versioned and 
 
 ## reply-style
 
-### [Unreleased]
+### [0.1.0] - 2026-10-29
 
 #### Added
 
@@ -70,7 +70,7 @@ All notable changes to claude-mods are recorded here. Each mod is versioned and 
 
 ## walkthrough
 
-### [Unreleased]
+### [0.1.0] - 2026-10-29
 
 #### Added
 
@@ -78,7 +78,7 @@ All notable changes to claude-mods are recorded here. Each mod is versioned and 
 
 ## restart
 
-### [Unreleased]
+### [0.1.0] - 2026-10-29
 
 #### Added
 
@@ -86,7 +86,7 @@ All notable changes to claude-mods are recorded here. Each mod is versioned and 
 
 ## Repository
 
-### [Unreleased]
+### [0.1.0] - 2026-10-29
 
 #### Added
 
