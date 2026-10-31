@@ -14,6 +14,35 @@ The mods run on macOS and need Claude Code (built and tested on 2.1.312) and `no
 optional extras: walkthrough draws diagrams as pictures with `rsvg-convert` (`brew install librsvg`), and
 transcript opens the chat in a [Mado](https://github.com/dautroc/mado) float.
 
+**Use the fullscreen layout.** The panes dock beside the transcript, the buttons in Claude's replies take
+clicks, and `ctrl+x y` works only there. Turn it on with `"tui": "fullscreen"` in
+`~/.claude/settings.json`; if a terminal still shows the classic layout, start Claude Code with
+`CLAUDE_CODE_NO_FLICKER=1`. Panes share one dock, with a tab each; its ✕ closes it.
+
+### With `claude plugin`
+
+This repo is a plugin marketplace. Add it once, then install each mod you want by its name from the table
+below:
+
+```sh
+claude plugin marketplace add dautroc/claude-mods
+claude plugin install aside@claude-mods
+```
+
+To install all eleven:
+
+```sh
+for mod in prompt-enhancer aside task-board idea-shelf walkthrough reply-style prompt-style paste-thumbnails prompt-jump transcript restart; do
+  claude plugin install $mod@claude-mods
+done
+```
+
+Each mod installs at user scope, so every new session loads it. An installed mod is a copy at its version,
+so a new release reaches you only when you update it: run `claude plugin marketplace update claude-mods`,
+then `claude plugin update <mod>@claude-mods`, and restart Claude Code.
+
+### From a clone, to work on the mods
+
 ```sh
 git clone git@github.com:dautroc/claude-mods.git ~/tools/claude-mods
 cd ~/tools/claude-mods
@@ -24,11 +53,6 @@ make install
 each new session loads them. In a session that is already running, run `/reload-plugins`.
 
 To leave one mod out, disable it: `claude plugin disable prompt-style@claude-mods`.
-
-**Use the fullscreen layout.** The panes dock beside the transcript, the buttons in Claude's replies take
-clicks, and `ctrl+x y` works only there. Turn it on with `"tui": "fullscreen"` in
-`~/.claude/settings.json`; if a terminal still shows the classic layout, start Claude Code with
-`CLAUDE_CODE_NO_FLICKER=1`. Panes share one dock, with a tab each; its ✕ closes it.
 
 ## The mods at a glance
 
