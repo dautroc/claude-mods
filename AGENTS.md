@@ -13,6 +13,7 @@
 ## prompt-enhancer
 
 - ✨ Enhance in the band above the prompt box, or `/enhance <prompt>`, rewrites the draft in place; Send submits the box, Undo puts the draft back. Enter is untouched.
+- `/enhance` with nothing after it does what ✨ Enhance does to the draft in the box, so a `command:enhance` keybinding, which runs the command with no arguments and leaves the draft in the box, works: `ctrl+x e` in the Chat context of `~/.claude/keybindings.json`. With an empty box it prints how to use it. A pty spike on 2026-11-03 (haiku, after a turn) confirmed the key rewrites the draft and brings up Send and Undo; the run draws an `/enhance` echo row on screen but writes nothing to the transcript file, so the model sees no record of it.
 - The rewrite is a `$.model.fork` over the session, so it reads the system prompt, instruction files, skills and the whole chat. Before the session's first turn there is nothing to fork: it reads the CLAUDE.md and AGENTS.md files from the project root up, plus the non-built-in commands, and calls `$.model.complete` on the session's model.
 - The rewrite rules live in `hooks/enhance.ts`. A prompt sent with Send goes through `$.prompt.submit`, which does not expand `@file` mentions, so the rules ask for plain paths.
 

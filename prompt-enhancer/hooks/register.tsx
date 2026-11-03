@@ -95,7 +95,7 @@ async function completeFresh($: Engine, ask: string) {
 }
 
 // Returns what to tell the person when the box was left as it was.
-async function enhance($: Engine, draft: string, isCommand: boolean): Promise<string | undefined> {
+async function enhance($: Engine, draft: string, fromArgs: boolean): Promise<string | undefined> {
   if (!isEnhanceable(draft)) {
     return 'Type a prompt first, then enhance it.'
   }
@@ -115,9 +115,10 @@ async function enhance($: Engine, draft: string, isCommand: boolean): Promise<st
     return `Couldn't enhance the prompt: ${outcome.why}.`
   }
 
-  // /enhance took the draft out of the box; a press left it there.
+  // /enhance <prompt> took the draft out of the box; a press, or /enhance
+  // with nothing after it, left it there.
   const box = (await $.prompt.read()).text
-  if (isCommand ? box.trim() !== '' : box !== draft) {
+  if (fromArgs ? box.trim() !== '' : box !== draft) {
     await update($, phase, () => IDLE)
 
     return 'The prompt box changed while the prompt was being enhanced, so it was left as it is.'
@@ -182,7 +183,15 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'enhance' }, async ($, e) => {
+    // With nothing after it, as a `command:enhance` keybinding runs it, the
+    // command does what ✨ Enhance does to the draft in the box.
     if (e.args.trim() === '') {
+      if (isEnhanceable((await $.prompt.read()).text)) {
+        await pressEnhance($)
+
+        return {}
+      }
+
       return { text: 'Type /enhance followed by your prompt, or type the prompt and press ✨ Enhance above the box.' }
     }
 

@@ -79,7 +79,8 @@ specific version, written from the project's `CLAUDE.md` and `AGENTS.md` files, 
 conversation so far. Edit it if you like, then click **Send**, or **Undo** to get your draft back. Enter
 still sends whatever is in the box.
 
-`/enhance <prompt>` does the same from the keyboard.
+`/enhance <prompt>` does the same from the keyboard. `/enhance` alone enhances the draft already in the box,
+so it can go on a key: `"ctrl+x e": "command:enhance"` in the `Chat` context of `~/.claude/keybindings.json`.
 
 ## aside: ask a side question
 

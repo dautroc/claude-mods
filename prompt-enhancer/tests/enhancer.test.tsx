@@ -245,6 +245,44 @@ describe('/enhance', () => {
     expect(box.text).toBe('Fix the login bug.')
     expect(ran.text).toContain('in the box')
   })
+
+  // A `command:` keybinding runs the command with no arguments and leaves
+  // the draft in the box.
+  test('with no argument, rewrites the draft in the box, as ✨ Enhance does', async ($, on) => {
+    const box = { text: 'fix it' }
+    const seen = engine(on, box, () => ({ isAnswered: true, text: '<prompt>Fix it well.</prompt>', usage: ANSWER }))
+    await start($)
+
+    const ran = await $.command.run({
+      command: 'enhance',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 120 },
+    })
+
+    expect(JSON.stringify(seen.asks[0])).toContain('<draft>\\nfix it\\n</draft>')
+    expect(box.text).toBe('Fix it well.')
+    expect(ran.text).toBeUndefined()
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect((await ui.find({ key: 'send' }))?.type).toBe('Button')
+    expect((await ui.find({ key: 'undo' }))?.type).toBe('Button')
+    await ui.unmount()
+  })
+
+  test('with no argument and an empty box, says how to use it', async ($, on) => {
+    const seen = engine(on, { text: '' }, () => NEVER)
+    await start($)
+
+    const ran = await $.command.run({
+      command: 'enhance',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 120 },
+    })
+
+    expect(seen.asks).toHaveLength(0)
+    expect(ran.text).toContain('Type /enhance followed by your prompt')
+  })
 })
 
 describe('reading the reply', () => {
