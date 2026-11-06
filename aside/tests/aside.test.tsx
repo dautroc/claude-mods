@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { ModelForkResult, On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
+import { readNote } from '../hooks/note'
 import { fitTables } from '../hooks/tables'
 import { buildAsk } from '../hooks/thread'
 
@@ -26,10 +27,10 @@ function answered(text: string): ModelForkResult {
 }
 
 // Stands for the engine: a model that answers each fork with `replies` in
-// turn, a prompt box holding `box.text`, and a record of what was asked,
-// opened, filled and toasted.
-function engine(on: On, replies: ModelForkResult[], box = { text: '' }) {
-  const seen = { asks: [] as string[], opens: [] as unknown[], fills: [] as unknown[], toasts: [] as string[] }
+// turn, a prompt box holding `box.text`, a surface that places the pane or
+// not, and a record of what was asked, opened, filled and toasted.
+function engine(on: On, replies: ModelForkResult[], box = { text: '' }, { isPlaced = true } = {}) {
+  const seen = { asks: [] as string[], opens: [] as unknown[], closes: [] as unknown[], fills: [] as unknown[], toasts: [] as string[] }
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('prompt.read', () => ({ value: { text: box.text, cursor: box.text.length } }))
   on('prompt.fill', (_, e) => {
@@ -42,7 +43,12 @@ function engine(on: On, replies: ModelForkResult[], box = { text: '' }) {
   on('ui.open', (_, e) => {
     seen.opens.push(e)
 
-    return { value: { isPlaced: true } }
+    return { value: isPlaced ? { isPlaced } : { isPlaced, reason: 'opened unasked under 110 columns (80 now)' } }
+  })
+  on('ui.close', (_, e) => {
+    seen.closes.push(e)
+
+    return { value: undefined }
   })
   on('ui.scroll', () => ({}))
   on('ui.toast', (_, e) => {
@@ -268,6 +274,154 @@ describe('hand off', () => {
 
     expect(seen.fills).toHaveLength(0)
     expect(seen.toasts).toEqual(["Couldn't write the hand-off: the API answered 529 (overloaded)."])
+  })
+})
+
+// The note You should know writes into the prompt box when its card's
+// "2: Chat in main session" is pressed, as Claude Code 2.1.318 builds it.
+const NOTE = [
+  'Here is a note offered by a side agent:',
+  '> Heads up · Claude keyed the page cache by path alone, so a page in two languages can show the wrong one.',
+  '> **The cache can serve the wrong language**',
+  '> A cache keeps a page once it is built, so the next visit is fast.',
+  '> ```',
+  '> /en/about -> built, kept',
+  '> /ja/about -> served the /en copy',
+  '> ```',
+  '> Japanese readers would see English until the cache expires.',
+  '',
+].join('\n')
+const NOTE_LINE = 'Heads up · Claude keyed the page cache by path alone, so a page in two languages can show the wrong one.'
+const NOTE_ANSWER = [
+  '**The cache can serve the wrong language**',
+  '',
+  'A cache keeps a page once it is built, so the next visit is fast.',
+  '```',
+  '/en/about -> built, kept',
+  '/ja/about -> served the /en copy',
+  '```',
+  'Japanese readers would see English until the cache expires.',
+].join('\n')
+
+function fillFrom($: Engine, name: string, text: string) {
+  return $.prompt.fill({ text, mode: 'replace', origin: { kind: 'plugin', name } })
+}
+
+describe('a You should know note', () => {
+  test("its card's Chat in main session opens the pane with the note, and keeps it out of the box", async ($, on) => {
+    const seen = engine(on, [])
+    await start($)
+
+    const filled = await fillFrom($, 'cc-plugin-you-should-know', NOTE)
+
+    expect(filled.isFilled).toBe(true)
+    expect(seen.fills).toEqual([])
+    expect(seen.opens).toEqual([expect.objectContaining({ id: 'aside', focus: true })])
+    expect(seen.asks).toHaveLength(0)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.find({ type: 'Text', text: /✦ Heads up · Claude keyed/ }))?.type).toBe('Text')
+    expect((await ui.find({ type: 'Markdown' }))?.text).toBe(NOTE_ANSWER)
+    expect((await ui.find({ key: 'handoff' }))?.type).toBe('Button')
+    await ui.unmount()
+  })
+
+  test('a follow-up carries the note as a note', async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = engine(on, [answered('Add the language to the key.')])
+    await start($)
+
+    await fillFrom($, 'cc-plugin-you-should-know', NOTE)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.input({ key: 'ask', text: 'how do I fix it?' })
+    await clock.advance(1)
+
+    expect(seen.asks[0]).toContain('A <note> in the thread is one that You should know')
+    expect(seen.asks[0]).toContain(`<note>\n${NOTE_LINE}\n</note>\n<answer>\n${NOTE_ANSWER}\n</answer>`)
+    expect(seen.asks[0]).toContain('<question>\nhow do I fix it?\n</question>')
+    expect((await ui.findAll({ type: 'Markdown' })).map(found => found.text)).toEqual([
+      NOTE_ANSWER,
+      'Add the language to the key.',
+    ])
+    await ui.unmount()
+  })
+
+  test('joins a thread that already holds asides', async ($, on) => {
+    const clock = mock.clock(on)
+    engine(on, [answered('Because of X.')])
+    await start($)
+
+    await aside($, 'why?')
+    await clock.advance(1)
+    await fillFrom($, 'cc-plugin-you-should-know', NOTE)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.findAll({ type: 'Markdown' })).map(found => found.text)).toEqual(['Because of X.', NOTE_ANSWER])
+    expect((await ui.find({ type: 'Text', text: /› why\?/ }))?.type).toBe('Text')
+    await ui.unmount()
+  })
+
+  test('Hand off writes a request from the note', async ($, on) => {
+    const clock = mock.clock(on)
+    const request = 'Add the language to the page cache key in src/cache.ts.'
+    const seen = engine(on, [answered(request)])
+    await start($)
+
+    await fillFrom($, 'cc-plugin-you-should-know', NOTE)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'handoff' })
+    await clock.advance(1)
+
+    expect(seen.asks[0]).toContain('Write the message they will send you')
+    expect(seen.asks[0]).toContain(`<note>\n${NOTE_LINE}\n</note>`)
+    expect(seen.fills).toEqual([{ text: request, mode: 'replace' }])
+    await ui.unmount()
+  })
+
+  test('where the pane is not placed, the note goes to the box as before', async ($, on) => {
+    const seen = engine(on, [], { text: '' }, { isPlaced: false })
+    await start($)
+
+    const filled = await fillFrom($, 'cc-plugin-you-should-know', NOTE)
+
+    expect(filled.isFilled).toBe(true)
+    expect(seen.fills).toEqual([{ text: NOTE, mode: 'replace' }])
+    expect(seen.closes).toEqual([expect.objectContaining({ id: 'aside' })])
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test("leaves another plugin's fill, and a text it can't read as a note, to the box", async ($, on) => {
+    const seen = engine(on, [])
+    await start($)
+
+    await fillFrom($, 'prompt-enhancer', NOTE)
+    await fillFrom($, 'cc-plugin-you-should-know', '/plugin disable cc-plugin-you-should-know@builtin')
+
+    expect(seen.fills).toEqual([
+      { text: NOTE, mode: 'replace' },
+      { text: '/plugin disable cc-plugin-you-should-know@builtin', mode: 'replace' },
+    ])
+    expect(seen.opens).toHaveLength(0)
+  })
+})
+
+describe('reading a note', () => {
+  test('takes the card line as the question and the rest as the answer', () => {
+    expect(readNote(NOTE)).toEqual({ question: NOTE_LINE, answer: NOTE_ANSWER })
+  })
+
+  test('reads a bare > as a blank line, and a title as its own paragraph', () => {
+    const note = ['Here is a note offered by a side agent:', '> You should know · A.', '> **One**', '> lead', '>', '> **Two**', '> more'].join('\n')
+
+    expect(readNote(note)).toEqual({ question: 'You should know · A.', answer: '**One**\n\nlead\n\n**Two**\n\nmore' })
+  })
+
+  test('reads nothing without the opening, an unquoted line, or an explanation', () => {
+    expect(readNote(NOTE.replace('Here is a note', 'Here is some note'))).toBeUndefined()
+    expect(readNote(NOTE.replace('> A cache keeps', 'A cache keeps'))).toBeUndefined()
+    expect(readNote('Here is a note offered by a side agent:\n> Heads up · A.\n')).toBeUndefined()
   })
 })
 

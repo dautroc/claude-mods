@@ -17,6 +17,10 @@ const HANDOFF = `The user has been asking side questions about this conversation
 - Do not call tools. Be brief: a few sentences or a short list.
 - Reply with the message only: no preamble, and no quotes around it.`
 
+// Goes before a thread that holds a note from You should know.
+const NOTES =
+  'A <note> in the thread is one that You should know, a side agent watching this conversation, showed the user; the <answer> after it is the explanation they read.'
+
 // How many earlier exchanges of the side thread go along with a question.
 const KEPT = 20
 
@@ -57,8 +61,14 @@ export function buildHandoff(answered: readonly Entry[], wanted: string): string
 }
 
 function exchanges(answered: readonly Entry[]): string {
-  return answered
-    .slice(-KEPT)
-    .map(entry => `<question>\n${entry.question}\n</question>\n<answer>\n${entry.answer}\n</answer>`)
+  const kept = answered.slice(-KEPT)
+  const text = kept
+    .map(entry => {
+      const tag = entry.isNote === true ? 'note' : 'question'
+
+      return `<${tag}>\n${entry.question}\n</${tag}>\n<answer>\n${entry.answer}\n</answer>`
+    })
     .join('\n\n')
+
+  return kept.some(entry => entry.isNote === true) ? `${NOTES}\n\n${text}` : text
 }

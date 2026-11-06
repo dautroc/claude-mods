@@ -1,6 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelForkResult, Register } from 'claude-code'
 
+import { YOU_SHOULD_KNOW, readNote } from './note'
 import { fitTables } from './tables'
 import { FRESH_SYSTEM, buildAsk, buildHandoff, isAnswered, isPending } from './thread'
 
@@ -192,6 +193,29 @@ export const register: Register = on => {
     return {}
   })
 
+  // You should know's card fills the prompt box with its note on "2: Chat in
+  // main session". The note joins the thread here instead, and the pane opens
+  // on it for follow-ups; answering filled closes the card. Where the pane
+  // can't be drawn, or the text isn't a note, it goes to the box as before.
+  on('prompt.fill', { origin: { kind: 'plugin', name: YOU_SHOULD_KNOW } }, async ($, e, next) => {
+    const note = readNote(e.text)
+    if (note === undefined) {
+      return next(e)
+    }
+
+    const opened = await $.ui.open({ id: PANE, title: 'Aside', focus: true })
+    if (!opened.isPlaced) {
+      await $.ui.close({ id: PANE })
+
+      return next(e)
+    }
+
+    await update($, thread, list => [...list, { id: crypto.randomUUID(), ...note, isNote: true }])
+    await toEnd($)
+
+    return { isFilled: true }
+  }).catch(($, e, next) => next(e))
+
   // A /clear ends the conversation the thread was about.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
@@ -220,7 +244,7 @@ export const register: Register = on => {
         {list.map(entry => (
           <Box flexDirection="column">
             <Text bold color="cyan">
-              › {entry.question}
+              {entry.isNote === true ? '✦' : '›'} {entry.question}
             </Text>
             {entry.answer !== undefined ? (
               <Markdown text={fitTables(entry.answer, room)} />

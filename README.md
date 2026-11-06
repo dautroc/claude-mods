@@ -95,6 +95,11 @@ When the side thread turns into something you want done, click **Hand off**, or 
 `/aside-handoff [what you want done]`. It writes a request from the thread into the prompt box, after any
 draft there, for you to edit and send. Press Esc to move from the pane to the box.
 
+If Claude Code's built-in **You should know** is on (in `/plugin`), the **2: Chat in main session** that
+follows a card's **Learn more** opens the note in the Aside pane instead of the prompt box. The card's line
+and its explanation join the thread, marked ✦, and the field is ready for a follow-up. Hand off works on
+it as on any aside. As before, the card asks for an empty prompt box first.
+
 ## task-board: the agent's plan on a board
 
 ![The task board pane beside a plan: each step with its detail, one marked as yours, with Start and Remove buttons](docs/media/task-board.png)
